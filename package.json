@@ -21,6 +21,11 @@
           "id": "gdbLiveWatch",
           "name": "Live Watch (GDB)",
           "icon": "$(pulse)"
+        },
+        {
+          "id": "gdbSymbols",
+          "name": "Symbols (GDB)",
+          "icon": "$(symbol-misc)"
         }
       ]
     },
@@ -28,6 +33,10 @@
       {
         "view": "gdbLiveWatch",
         "contents": "No live watch expressions.\n[Add Expression](command:gdbLiveWatch.addExpression)\nExpressions are polled periodically, even while the target is running."
+      },
+      {
+        "view": "gdbSymbols",
+        "contents": "Browse the variables, functions, constants and types of the debugged target (e.g. VECU.dll).\n[Load Symbols](command:gdbSymbols.load)\nUse the filter button to restrict the listing with a regular expression before loading large symbol tables."
       }
     ],
     "commands": [
@@ -104,6 +113,41 @@
         "command": "gdbLiveWatch.toggleHexFormat",
         "title": "Toggle Hex Display",
         "category": "GDB Live Watch"
+      },
+      {
+        "command": "gdbSymbols.load",
+        "title": "Load Symbols",
+        "category": "GDB Symbols",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "gdbSymbols.search",
+        "title": "Filter Symbols...",
+        "category": "GDB Symbols",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "gdbSymbols.clearFilter",
+        "title": "Clear Symbol Filter",
+        "category": "GDB Symbols",
+        "icon": "$(filter-filled)"
+      },
+      {
+        "command": "gdbSymbols.addToLiveWatch",
+        "title": "Add to Live Watch",
+        "category": "GDB Symbols",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "gdbSymbols.goTo",
+        "title": "Go to Source",
+        "category": "GDB Symbols",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "gdbSymbols.copyName",
+        "title": "Copy Symbol Name",
+        "category": "GDB Symbols"
       }
     ],
     "menus": {
@@ -142,6 +186,21 @@
           "command": "gdbLiveWatch.toggleHexFormat",
           "when": "view == gdbLiveWatch",
           "group": "settings@2"
+        },
+        {
+          "command": "gdbSymbols.search",
+          "when": "view == gdbSymbols",
+          "group": "navigation@1"
+        },
+        {
+          "command": "gdbSymbols.clearFilter",
+          "when": "view == gdbSymbols && gdbSymbols.hasFilter",
+          "group": "navigation@2"
+        },
+        {
+          "command": "gdbSymbols.load",
+          "when": "view == gdbSymbols",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -184,6 +243,31 @@
           "command": "gdbLiveWatch.copyExpression",
           "when": "view == gdbLiveWatch",
           "group": "2_copy@2"
+        },
+        {
+          "command": "gdbSymbols.addToLiveWatch",
+          "when": "view == gdbSymbols && viewItem =~ /gdbSymbols\\.symbol/",
+          "group": "inline@1"
+        },
+        {
+          "command": "gdbSymbols.goTo",
+          "when": "view == gdbSymbols && viewItem == gdbSymbols.symbolWithLocation",
+          "group": "inline@2"
+        },
+        {
+          "command": "gdbSymbols.addToLiveWatch",
+          "when": "view == gdbSymbols && viewItem =~ /gdbSymbols\\.symbol/",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "gdbSymbols.goTo",
+          "when": "view == gdbSymbols && viewItem == gdbSymbols.symbolWithLocation",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "gdbSymbols.copyName",
+          "when": "view == gdbSymbols && viewItem =~ /gdbSymbols\\.symbol/",
+          "group": "2_copy@1"
         }
       ],
       "editor/context": [
@@ -212,6 +296,18 @@
         },
         {
           "command": "gdbLiveWatch.copyExpression",
+          "when": "false"
+        },
+        {
+          "command": "gdbSymbols.addToLiveWatch",
+          "when": "false"
+        },
+        {
+          "command": "gdbSymbols.goTo",
+          "when": "false"
+        },
+        {
+          "command": "gdbSymbols.copyName",
           "when": "false"
         }
       ]
@@ -255,6 +351,22 @@
           "type": "boolean",
           "default": false,
           "description": "Display values in hexadecimal format."
+        },
+        "gdbSymbols.maxSymbolsPerCategory": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 1,
+          "description": "Maximum number of symbols shown per category (variables, functions, constants, types) in the Symbols view."
+        },
+        "gdbSymbols.includeNonDebugging": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also list symbols without debug information ('Non-debugging symbols' from the symbol file, e.g. stripped DLL exports)."
+        },
+        "gdbSymbols.fileScopedExpressions": {
+          "type": "boolean",
+          "default": false,
+          "description": "When adding a symbol to the Live Watch, qualify it with its source file ('file.c'::symbol) so static variables with identical names in different files are unambiguous (similar to winIDEA's file/process suffix)."
         }
       }
     }

@@ -2,6 +2,8 @@
 
 A VS Code extension that adds a **Live Watch (GDB)** panel to the Run & Debug sidebar. Unlike the built-in Watch panel, it keeps updating variable values **while the target is running** — including targets where GDB non-stop mode is **not** available (e.g. host applications running on VEOS).
 
+It also includes a **Symbols (GDB)** browser — a winIDEA-style symbol table that lists all variables, functions, constants and types of the debugged target so you can jump to their source or add them to the Live Watch.
+
 > Why a separate panel? VS Code's built-in Watch view cannot be extended or modified by extensions, so this extension re-implements the watch functionality in its own view and adds live polling on top.
 
 ## Features
@@ -22,6 +24,23 @@ A VS Code extension that adds a **Live Watch (GDB)** panel to the Run & Debug si
 4. Polling starts automatically with the session (configurable). Use the play/pause button in the view title or the status bar item to toggle it.
 
 While the target is **running**, expressions must be resolvable without a stack frame (globals, statics, absolute addresses like `*(int*)0x20000000`). During sampling cycles and while stopped, locals of the interrupted frame work too.
+
+## Symbol browser
+
+The **Symbols (GDB)** view (Run & Debug sidebar) browses the symbol table that GDB loaded from the target (e.g. `VECU.dll`), similar to winIDEA's Symbol Browser:
+
+- **Categories** — *Variables*, *Constants* (`const` variables), *Functions* and *Types*, grouped by source file (module), with declaration and line info.
+- **Load / Filter** — press **Load Symbols** (refresh icon) to read the table via `info variables` / `info functions` / `info types`. Use the filter icon to restrict the listing with a GDB regular expression *before* loading large symbol tables (e.g. `^motor_`). Loading also works while the target is running (a sampling cycle is used if needed).
+- **Go to source** — click a symbol (or use the go-to icon) to open its declaration. Compile-time paths that don't exist locally are resolved by searching the workspace.
+- **Add to Live Watch** — the eye icon (or context menu) adds the symbol to the Live Watch panel, like winIDEA's double-click-to-watch.
+
+Symbol browser settings:
+
+| Setting | Default | Description |
+|---|---|---|
+| `gdbSymbols.maxSymbolsPerCategory` | `2000` | Cap per category; use the filter to narrow large tables. |
+| `gdbSymbols.includeNonDebugging` | `false` | Also list symbols without debug info (stripped exports). |
+| `gdbSymbols.fileScopedExpressions` | `false` | Add watch expressions as `'file.c'::symbol` to disambiguate statics (winIDEA-style file suffix). |
 
 ## How polling-while-running works
 

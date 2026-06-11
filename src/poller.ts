@@ -111,13 +111,8 @@ export class Poller implements vscode.Disposable {
         }
     }
 
-    /**
-     * Writes a new value to the node with the given id, transparently handling
-     * the running target (direct write in non-stop mode, or a pause -> write ->
-     * continue cycle when sampling). Throws on failure so the caller can report it.
-     */
-    async setNodeValue(session: vscode.DebugSession, nodeId: string, value: string): Promise<void> {
-        // Wait for any in-flight poll tick to finish.
+    /** Wait for any in-flight poll tick to finish, then claim the busy flag. */
+    private async claimBusy(): Promise<void> {
         for (let i = 0; i < 60 && this.busy; i++) {
             await new Promise((r) => setTimeout(r, 50));
         }
@@ -125,6 +120,66 @@ export class Poller implements vscode.Disposable {
             throw new Error('live watch is busy, try again');
         }
         this.busy = true;
+    }
+
+    /**
+     * Runs a read-only operation against the debug session, transparently
+     * handling a running target the same way value polling does: try a direct
+     * request first (non-stop / async mode), fall back to a transparent
+     * pause -> read -> continue cycle. Throws on failure.
+     */
+    async runReadOperation<T>(session: vscode.DebugSession, fn: () => Promise<T>): Promise<T> {
+        await this.claimBusy();
+        try {
+            const state = this.tracker.getState(session.id);
+            if (state === 'stopped') {
+                return await fn();
+            }
+
+            const mode = this.mode;
+            let useSampling =
+                mode === 'sample' || (mode === 'auto' && this.samplingSessions.has(session.id));
+
+            if (!useSampling) {
+                try {
+                    return await fn();
+                } catch (e) {
+                    if (mode !== 'auto') {
+                        throw e;
+                    }
+                    this.samplingSessions.add(session.id);
+                    useSampling = true;
+                }
+            }
+
+            let result: T | undefined;
+            let error: unknown;
+            const done = await this.withSampledStop(session, async () => {
+                try {
+                    result = await fn();
+                } catch (e) {
+                    error = e;
+                }
+            });
+            if (error) {
+                throw error;
+            }
+            if (!done) {
+                throw new Error('could not pause the target');
+            }
+            return result as T;
+        } finally {
+            this.busy = false;
+        }
+    }
+
+    /**
+     * Writes a new value to the node with the given id, transparently handling
+     * the running target (direct write in non-stop mode, or a pause -> write ->
+     * continue cycle when sampling). Throws on failure so the caller can report it.
+     */
+    async setNodeValue(session: vscode.DebugSession, nodeId: string, value: string): Promise<void> {
+        await this.claimBusy();
         try {
             const state = this.tracker.getState(session.id);
             if (state === 'stopped') {

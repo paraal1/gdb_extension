@@ -10,6 +10,15 @@ interface SessionInfo {
     /** True if the last stop was caused by our sampling pause and is safe to auto-continue. */
     autoContinueOk: boolean;
     stopWaiters: Array<(stopped: boolean) => void>;
+    /** Active captures of DAP 'output' events (used to read GDB console command output). */
+    outputCaptures: Set<{ chunks: string[] }>;
+}
+
+export interface OutputCapture {
+    /** Current captured text without ending the capture. */
+    peek(): string;
+    /** Stops capturing and returns everything captured so far. */
+    stop(): string;
 }
 
 /** Stop reasons that mean "something real happened" - never auto-continue past these. */
@@ -48,7 +57,13 @@ export class DebugSessionTracker implements vscode.Disposable {
     private info(sessionId: string): SessionInfo {
         let info = this.sessions.get(sessionId);
         if (!info) {
-            info = { state: 'unknown', expectingPause: false, autoContinueOk: false, stopWaiters: [] };
+            info = {
+                state: 'unknown',
+                expectingPause: false,
+                autoContinueOk: false,
+                stopWaiters: [],
+                outputCaptures: new Set()
+            };
             this.sessions.set(sessionId, info);
         }
         return info;
@@ -61,7 +76,9 @@ export class DebugSessionTracker implements vscode.Disposable {
                 if (msg?.type !== 'event') {
                     return;
                 }
-                if (msg.event === 'stopped') {
+                if (msg.event === 'output' && typeof msg.body?.output === 'string') {
+                    info.outputCaptures.forEach((c) => c.chunks.push(msg.body.output));
+                } else if (msg.event === 'stopped') {
                     info.state = 'stopped';
                     if (typeof msg.body?.threadId === 'number') {
                         info.threadId = msg.body.threadId;
@@ -118,6 +135,24 @@ export class DebugSessionTracker implements vscode.Disposable {
         const ok = info.autoContinueOk;
         info.autoContinueOk = false;
         return ok;
+    }
+
+    /**
+     * Starts capturing DAP 'output' events for a session. Used to collect the
+     * console output of GDB commands (e.g. 'info variables'), which some
+     * adapters report as output events instead of the evaluate response.
+     */
+    startOutputCapture(sessionId: string): OutputCapture {
+        const info = this.info(sessionId);
+        const capture = { chunks: [] as string[] };
+        info.outputCaptures.add(capture);
+        return {
+            peek: () => capture.chunks.join(''),
+            stop: () => {
+                info.outputCaptures.delete(capture);
+                return capture.chunks.join('');
+            }
+        };
     }
 
     /** Resolves true when the session reports a 'stopped' event, false on timeout/termination. */
