@@ -1,0 +1,273 @@
+{
+  "name": "gdb-live-watch",
+  "displayName": "GDB Live Watch",
+  "description": "Watch panel with live polling of variables while the target is running. Works with GDB-based debug adapters (cppdbg, cortex-debug, ...), including targets without non-stop mode support (e.g. host applications on VEOS).",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onDebug"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "views": {
+      "debug": [
+        {
+          "id": "gdbLiveWatch",
+          "name": "Live Watch (GDB)",
+          "icon": "$(pulse)"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "gdbLiveWatch",
+        "contents": "No live watch expressions.\n[Add Expression](command:gdbLiveWatch.addExpression)\nExpressions are polled periodically, even while the target is running."
+      }
+    ],
+    "commands": [
+      {
+        "command": "gdbLiveWatch.addExpression",
+        "title": "Add Expression",
+        "category": "GDB Live Watch",
+        "icon": "$(add)"
+      },
+      {
+        "command": "gdbLiveWatch.addSelectionToLiveWatch",
+        "title": "Add Selection to Live Watch",
+        "category": "GDB Live Watch"
+      },
+      {
+        "command": "gdbLiveWatch.editExpression",
+        "title": "Edit Expression",
+        "category": "GDB Live Watch",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "gdbLiveWatch.removeExpression",
+        "title": "Remove Expression",
+        "category": "GDB Live Watch",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "gdbLiveWatch.removeAll",
+        "title": "Remove All Expressions",
+        "category": "GDB Live Watch",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "gdbLiveWatch.setValue",
+        "title": "Set Value",
+        "category": "GDB Live Watch",
+        "icon": "$(pencil)"
+      },
+      {
+        "command": "gdbLiveWatch.copyValue",
+        "title": "Copy Value",
+        "category": "GDB Live Watch"
+      },
+      {
+        "command": "gdbLiveWatch.copyExpression",
+        "title": "Copy Expression",
+        "category": "GDB Live Watch"
+      },
+      {
+        "command": "gdbLiveWatch.refresh",
+        "title": "Refresh Now",
+        "category": "GDB Live Watch",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "gdbLiveWatch.startPolling",
+        "title": "Start Live Polling",
+        "category": "GDB Live Watch",
+        "icon": "$(play)"
+      },
+      {
+        "command": "gdbLiveWatch.stopPolling",
+        "title": "Stop Live Polling",
+        "category": "GDB Live Watch",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "gdbLiveWatch.setPollingInterval",
+        "title": "Set Polling Interval...",
+        "category": "GDB Live Watch",
+        "icon": "$(watch)"
+      },
+      {
+        "command": "gdbLiveWatch.toggleHexFormat",
+        "title": "Toggle Hex Display",
+        "category": "GDB Live Watch"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "gdbLiveWatch.addExpression",
+          "when": "view == gdbLiveWatch",
+          "group": "navigation@1"
+        },
+        {
+          "command": "gdbLiveWatch.startPolling",
+          "when": "view == gdbLiveWatch && !gdbLiveWatch.polling",
+          "group": "navigation@2"
+        },
+        {
+          "command": "gdbLiveWatch.stopPolling",
+          "when": "view == gdbLiveWatch && gdbLiveWatch.polling",
+          "group": "navigation@2"
+        },
+        {
+          "command": "gdbLiveWatch.refresh",
+          "when": "view == gdbLiveWatch",
+          "group": "navigation@3"
+        },
+        {
+          "command": "gdbLiveWatch.removeAll",
+          "when": "view == gdbLiveWatch",
+          "group": "navigation@4"
+        },
+        {
+          "command": "gdbLiveWatch.setPollingInterval",
+          "when": "view == gdbLiveWatch",
+          "group": "settings@1"
+        },
+        {
+          "command": "gdbLiveWatch.toggleHexFormat",
+          "when": "view == gdbLiveWatch",
+          "group": "settings@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "gdbLiveWatch.editExpression",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.expression",
+          "group": "inline@1"
+        },
+        {
+          "command": "gdbLiveWatch.removeExpression",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.expression",
+          "group": "inline@2"
+        },
+        {
+          "command": "gdbLiveWatch.setValue",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.variable",
+          "group": "inline@1"
+        },
+        {
+          "command": "gdbLiveWatch.setValue",
+          "when": "view == gdbLiveWatch",
+          "group": "1_modify@0"
+        },
+        {
+          "command": "gdbLiveWatch.editExpression",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.expression",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "gdbLiveWatch.removeExpression",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.expression",
+          "group": "1_modify@2"
+        },
+        {
+          "command": "gdbLiveWatch.copyValue",
+          "when": "view == gdbLiveWatch",
+          "group": "2_copy@1"
+        },
+        {
+          "command": "gdbLiveWatch.copyExpression",
+          "when": "view == gdbLiveWatch",
+          "group": "2_copy@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "gdbLiveWatch.addSelectionToLiveWatch",
+          "when": "editorHasSelection",
+          "group": "debug@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "gdbLiveWatch.editExpression",
+          "when": "false"
+        },
+        {
+          "command": "gdbLiveWatch.removeExpression",
+          "when": "false"
+        },
+        {
+          "command": "gdbLiveWatch.setValue",
+          "when": "false"
+        },
+        {
+          "command": "gdbLiveWatch.copyValue",
+          "when": "false"
+        },
+        {
+          "command": "gdbLiveWatch.copyExpression",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "GDB Live Watch",
+      "properties": {
+        "gdbLiveWatch.pollingInterval": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 100,
+          "description": "Polling interval in milliseconds for refreshing live watch expressions."
+        },
+        "gdbLiveWatch.mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "nonStop",
+            "sample"
+          ],
+          "enumDescriptions": [
+            "Try direct evaluation while running (non-stop mode); automatically fall back to pause/read/continue sampling if the target/adapter does not support it.",
+            "Only evaluate directly while the target is running. Requires GDB non-stop mode.",
+            "Always use pause/read/continue sampling cycles while the target is running. Use this when non-stop mode is not supported."
+          ],
+          "default": "auto",
+          "description": "How variables are read while the target is running."
+        },
+        "gdbLiveWatch.autoStartPolling": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start live polling when a debug session starts."
+        },
+        "gdbLiveWatch.maxChildren": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "description": "Maximum number of children to show when expanding a variable."
+        },
+        "gdbLiveWatch.hexFormat": {
+          "type": "boolean",
+          "default": false,
+          "description": "Display values in hexadecimal format."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
