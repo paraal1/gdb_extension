@@ -30,7 +30,8 @@ While the target is **running**, expressions must be resolvable without a stack 
 The **Symbols (GDB)** view (Run & Debug sidebar) browses the symbol table that GDB loaded from the target (e.g. `VECU.dll`), similar to winIDEA's Symbol Browser:
 
 - **Categories** — *Variables*, *Constants* (`const` variables), *Functions* and *Types*, grouped by source file (module), with declaration and line info.
-- **Load / Filter** — press **Load Symbols** (refresh icon) to read the table via `info variables` / `info functions` / `info types`. Use the filter icon to restrict the listing with a GDB regular expression *before* loading large symbol tables (e.g. `^motor_`). Loading also works while the target is running (a sampling cycle is used if needed).
+- **Loaded once, cached for the session** — the full table is read automatically when the debug session starts (via `info variables` / `info functions` / `info types`, using a sampling cycle if the target is running) and kept in memory. Use **Reload Symbols** (refresh icon) only if the symbol file changed.
+- **Instant filtering** — the filter icon applies a regular expression (or plain substring) to the cached table locally; activating or clearing a filter never re-reads symbols from GDB.
 - **Go to source** — click a symbol (or use the go-to icon) to open its declaration. Compile-time paths that don't exist locally are resolved by searching the workspace.
 - **Add to Live Watch** — the eye icon (or context menu) adds the symbol to the Live Watch panel, like winIDEA's double-click-to-watch.
 
@@ -38,6 +39,7 @@ Symbol browser settings:
 
 | Setting | Default | Description |
 |---|---|---|
+| `gdbSymbols.autoLoad` | `true` | Load the symbol table automatically when a session starts. |
 | `gdbSymbols.maxSymbolsPerCategory` | `2000` | Cap per category; use the filter to narrow large tables. |
 | `gdbSymbols.includeNonDebugging` | `false` | Also list symbols without debug info (stripped exports). |
 | `gdbSymbols.fileScopedExpressions` | `false` | Add watch expressions as `'file.c'::symbol` to disambiguate statics (winIDEA-style file suffix). |

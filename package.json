@@ -36,7 +36,7 @@
       },
       {
         "view": "gdbSymbols",
-        "contents": "Browse the variables, functions, constants and types of the debugged target (e.g. VECU.dll).\n[Load Symbols](command:gdbSymbols.load)\nUse the filter button to restrict the listing with a regular expression before loading large symbol tables."
+        "contents": "Browse the variables, functions, constants and types of the debugged target.\nSymbols are loaded automatically when a debug session starts and kept cached; filtering is instant and local.\n[Load Symbols](command:gdbSymbols.load)"
       }
     ],
     "commands": [
@@ -116,7 +116,7 @@
       },
       {
         "command": "gdbSymbols.load",
-        "title": "Load Symbols",
+        "title": "Reload Symbols",
         "category": "GDB Symbols",
         "icon": "$(refresh)"
       },
@@ -351,6 +351,11 @@
           "type": "boolean",
           "default": false,
           "description": "Display values in hexadecimal format."
+        },
+        "gdbSymbols.autoLoad": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically load the symbol table when a debug session starts. The table is cached for the whole session; filtering never triggers a reload."
         },
         "gdbSymbols.maxSymbolsPerCategory": {
           "type": "number",

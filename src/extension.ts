@@ -77,6 +77,23 @@ export function activate(context: vscode.ExtensionContext): void {
     const autoStart = () =>
         vscode.workspace.getConfiguration('gdbLiveWatch').get<boolean>('autoStartPolling', true);
 
+    // ---- automatic symbol loading -----------------------------------------
+    // The symbol table can only be read once GDB is responsive, so the load is
+    // triggered by the first run-state event of the session (entry stop or
+    // first continue), with a timer as fallback for sessions that emit neither.
+    const pendingSymbolLoad = new Set<string>();
+    const symbolAutoLoad = () =>
+        vscode.workspace.getConfiguration('gdbSymbols').get<boolean>('autoLoad', true);
+
+    const autoLoadSymbols = (session: vscode.DebugSession) => {
+        if (!pendingSymbolLoad.delete(session.id)) {
+            return;
+        }
+        symbols.load(session).catch(() => {
+            // Adapter not ready or unsupported; user can still load manually.
+        });
+    };
+
     context.subscriptions.push(
         vscode.debug.onDidStartDebugSession(() => {
             if (autoStart()) {
@@ -84,9 +101,18 @@ export function activate(context: vscode.ExtensionContext): void {
             }
             updateStatusBar();
         }),
+        vscode.debug.onDidStartDebugSession((session) => {
+            if (!symbolAutoLoad()) {
+                return;
+            }
+            pendingSymbolLoad.add(session.id);
+            setTimeout(() => autoLoadSymbols(session), 3000);
+        }),
+        tracker.onDidChangeState((session) => autoLoadSymbols(session)),
         vscode.debug.onDidTerminateDebugSession((s) => {
             poller.forgetSession(s.id);
             symbols.forgetSession(s.id);
+            pendingSymbolLoad.delete(s.id);
             if (!vscode.debug.activeDebugSession) {
                 poller.stop();
                 model.invalidate();
@@ -108,6 +134,13 @@ export function activate(context: vscode.ExtensionContext): void {
             if (e.affectsConfiguration('gdbLiveWatch.pollingInterval')) {
                 poller.restartIfPolling();
                 updateStatusBar();
+            }
+            if (
+                e.affectsConfiguration('gdbSymbols.maxSymbolsPerCategory') ||
+                e.affectsConfiguration('gdbSymbols.includeNonDebugging')
+            ) {
+                // View settings only affect the cached table's presentation.
+                symbols.refreshView();
             }
         })
     );
@@ -247,14 +280,14 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     // ---- symbol browser commands -------------------------------------------
-    const loadSymbols = async () => {
+    const loadSymbols = async (force: boolean) => {
         const session = vscode.debug.activeDebugSession;
         if (!session) {
             void vscode.window.showWarningMessage('GDB Symbols: no active debug session.');
             return;
         }
         try {
-            await symbols.load(session);
+            await symbols.load(session, { force });
         } catch (e: any) {
             const msg = String(e?.message ?? e).split('\n')[0];
             void vscode.window.showErrorMessage(`GDB Symbols: failed to load symbols: ${msg}`);
@@ -262,11 +295,11 @@ export function activate(context: vscode.ExtensionContext): void {
     };
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('gdbSymbols.load', loadSymbols),
+        vscode.commands.registerCommand('gdbSymbols.load', () => loadSymbols(true)),
 
         vscode.commands.registerCommand('gdbSymbols.search', async () => {
             const value = await vscode.window.showInputBox({
-                prompt: 'Filter symbols (GDB regular expression matched against symbol names)',
+                prompt: 'Filter loaded symbols by name (regular expression or plain substring) - applied instantly, no reload',
                 placeHolder: 'e.g. ^counter, motor_.*, Adc',
                 value: symbols.filter
             });
@@ -274,12 +307,14 @@ export function activate(context: vscode.ExtensionContext): void {
                 return;
             }
             symbols.filter = value.trim();
-            await loadSymbols();
+            // If nothing is cached yet (e.g. auto-load disabled), load once now.
+            if (!symbols.hasData && vscode.debug.activeDebugSession) {
+                await loadSymbols(false);
+            }
         }),
 
-        vscode.commands.registerCommand('gdbSymbols.clearFilter', async () => {
+        vscode.commands.registerCommand('gdbSymbols.clearFilter', () => {
             symbols.filter = '';
-            await loadSymbols();
         }),
 
         vscode.commands.registerCommand('gdbSymbols.addToLiveWatch', (node: SymbolNode) => {

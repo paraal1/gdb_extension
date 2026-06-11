@@ -171,18 +171,39 @@ function delay(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Builds a name matcher from the user filter: regex if valid, substring otherwise. */
+function makeMatcher(filter: string): (name: string) => boolean {
+    if (!filter) {
+        return () => true;
+    }
+    try {
+        const re = new RegExp(filter, 'i');
+        return (name) => re.test(name);
+    } catch {
+        const needle = filter.toLowerCase();
+        return (name) => name.toLowerCase().includes(needle);
+    }
+}
+
 /**
  * Loads the target's symbol table (variables, functions, constants, types)
  * through GDB console commands, similar to winIDEA's Symbol Browser.
+ *
+ * The complete table is loaded once per debug session and cached; filtering
+ * only recomputes the visible view locally, without talking to GDB again.
  */
 export class SymbolService implements vscode.Disposable {
+    /** Complete, unfiltered symbol table as loaded from GDB (sorted by name). */
+    private allEntries: SymbolEntry[] = [];
+    /** Session the cached table belongs to. */
+    private loadedSessionId?: string;
+    /** Visible (filtered, capped) view, per category. */
     private readonly entries = new Map<SymbolCategory, SymbolEntry[]>();
     private readonly truncatedCategories = new Set<SymbolCategory>();
     /** Console-command prefix known to work, cached per session. */
     private readonly prefixCache = new Map<string, string>();
 
-    /** GDB regular expression used to restrict the listings. */
-    filter = '';
+    private _filter = '';
     loading = false;
 
     private readonly changeEmitter = new vscode.EventEmitter<void>();
@@ -193,17 +214,25 @@ export class SymbolService implements vscode.Disposable {
         private readonly poller: Poller
     ) {}
 
-    get isEmpty(): boolean {
-        for (const list of this.entries.values()) {
-            if (list.length > 0) {
-                return false;
-            }
-        }
-        return true;
+    /** Local filter (regex or substring) applied to the cached table - instant. */
+    get filter(): string {
+        return this._filter;
     }
 
+    set filter(value: string) {
+        if (this._filter !== value) {
+            this._filter = value;
+            this.refreshView();
+        }
+    }
+
+    /** True once a symbol table has been loaded for some session. */
     get hasData(): boolean {
-        return this.entries.size > 0;
+        return this.loadedSessionId !== undefined;
+    }
+
+    isLoadedFor(sessionId: string): boolean {
+        return this.loadedSessionId === sessionId;
     }
 
     getCategory(category: SymbolCategory): readonly SymbolEntry[] {
@@ -215,6 +244,8 @@ export class SymbolService implements vscode.Disposable {
     }
 
     clear(): void {
+        this.allEntries = [];
+        this.loadedSessionId = undefined;
         this.entries.clear();
         this.truncatedCategories.clear();
         this.changeEmitter.fire();
@@ -222,51 +253,75 @@ export class SymbolService implements vscode.Disposable {
 
     forgetSession(sessionId: string): void {
         this.prefixCache.delete(sessionId);
+        if (this.loadedSessionId === sessionId) {
+            this.loadedSessionId = undefined;
+        }
     }
 
-    async load(session: vscode.DebugSession): Promise<void> {
+    /**
+     * Loads the complete symbol table from GDB. Skipped when the table is
+     * already cached for this session, unless `force` is set (explicit reload).
+     */
+    async load(session: vscode.DebugSession, options?: { force?: boolean }): Promise<void> {
         if (this.loading) {
+            return;
+        }
+        if (!options?.force && this.isLoadedFor(session.id) && this.allEntries.length > 0) {
             return;
         }
         this.loading = true;
         this.changeEmitter.fire();
         try {
-            const arg = this.filter ? ` ${this.filter}` : '';
             const [vars, funcs, types] = await this.poller.runReadOperation(session, async () => {
-                const v = await this.execConsole(session, `info variables${arg}`);
-                const f = await this.execConsole(session, `info functions${arg}`);
-                const t = await this.execConsole(session, `info types${arg}`);
+                const v = await this.execConsole(session, 'info variables');
+                const f = await this.execConsole(session, 'info functions');
+                const t = await this.execConsole(session, 'info types');
                 return [v, f, t];
             });
 
-            const cfg = vscode.workspace.getConfiguration('gdbSymbols');
-            const max = Math.max(1, cfg.get<number>('maxSymbolsPerCategory', 2000));
-            const includeNonDebugging = cfg.get<boolean>('includeNonDebugging', false);
-
-            let all = [
+            this.allEntries = [
                 ...parseSymbolListing(vars, 'variables'),
                 ...parseSymbolListing(funcs, 'functions'),
                 ...parseSymbolListing(types, 'types')
-            ];
-            if (!includeNonDebugging) {
-                all = all.filter((e) => !e.nonDebugging);
-            }
-
-            this.entries.clear();
-            this.truncatedCategories.clear();
-            for (const category of SYMBOL_CATEGORIES) {
-                const list = all
-                    .filter((e) => e.category === category)
-                    .sort((a, b) => a.name.localeCompare(b.name));
-                if (list.length > max) {
-                    this.truncatedCategories.add(category);
-                    list.length = max;
-                }
-                this.entries.set(category, list);
-            }
+            ].sort((a, b) => a.name.localeCompare(b.name));
+            this.loadedSessionId = session.id;
+            this.rebuildView();
         } finally {
             this.loading = false;
             this.changeEmitter.fire();
+        }
+    }
+
+    /** Recomputes the visible view from the cached table (filter/settings changed). */
+    refreshView(): void {
+        this.rebuildView();
+        this.changeEmitter.fire();
+    }
+
+    private rebuildView(): void {
+        const cfg = vscode.workspace.getConfiguration('gdbSymbols');
+        const max = Math.max(1, cfg.get<number>('maxSymbolsPerCategory', 2000));
+        const includeNonDebugging = cfg.get<boolean>('includeNonDebugging', false);
+        const matches = makeMatcher(this._filter);
+
+        this.entries.clear();
+        this.truncatedCategories.clear();
+        for (const category of SYMBOL_CATEGORIES) {
+            this.entries.set(category, []);
+        }
+        for (const entry of this.allEntries) {
+            if (entry.nonDebugging && !includeNonDebugging) {
+                continue;
+            }
+            if (!matches(entry.name)) {
+                continue;
+            }
+            const list = this.entries.get(entry.category)!;
+            if (list.length >= max) {
+                this.truncatedCategories.add(entry.category);
+                continue;
+            }
+            list.push(entry);
         }
     }
 

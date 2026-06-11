@@ -103,7 +103,7 @@ export class SymbolTreeProvider implements vscode.TreeDataProvider<SymbolNode> {
 
     getChildren(node?: SymbolNode): SymbolNode[] {
         if (!node) {
-            if (!this.service.hasData || this.service.isEmpty) {
+            if (!this.service.hasData) {
                 return [];
             }
             return SYMBOL_CATEGORIES.map((category) => ({ kind: 'category', category }));
