@@ -127,13 +127,20 @@ export class Poller implements vscode.Disposable {
      * handling a running target the same way value polling does: try a direct
      * request first (non-stop / async mode), fall back to a transparent
      * pause -> read -> continue cycle. Throws on failure.
+     *
+     * The callback receives the top stack frame id when the target is (or has
+     * been transparently) stopped, and undefined for direct evaluation while
+     * running.
      */
-    async runReadOperation<T>(session: vscode.DebugSession, fn: () => Promise<T>): Promise<T> {
+    async runReadOperation<T>(
+        session: vscode.DebugSession,
+        fn: (frameId: number | undefined) => Promise<T>
+    ): Promise<T> {
         await this.claimBusy();
         try {
             const state = this.tracker.getState(session.id);
             if (state === 'stopped') {
-                return await fn();
+                return await fn(await this.topFrameId(session));
             }
 
             const mode = this.mode;
@@ -142,7 +149,7 @@ export class Poller implements vscode.Disposable {
 
             if (!useSampling) {
                 try {
-                    return await fn();
+                    return await fn(undefined);
                 } catch (e) {
                     if (mode !== 'auto') {
                         throw e;
@@ -154,9 +161,9 @@ export class Poller implements vscode.Disposable {
 
             let result: T | undefined;
             let error: unknown;
-            const done = await this.withSampledStop(session, async () => {
+            const done = await this.withSampledStop(session, async (frameId) => {
                 try {
-                    result = await fn();
+                    result = await fn(frameId);
                 } catch (e) {
                     error = e;
                 }

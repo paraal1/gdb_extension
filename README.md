@@ -4,6 +4,8 @@ A VS Code extension that adds a **Live Watch (GDB)** panel to the Run & Debug si
 
 It also includes a **Symbols (GDB)** browser — a winIDEA-style symbol table that lists all variables, functions, constants and types of the debugged target so you can jump to their source or add them to the Live Watch.
 
+On top of that, a **DAQ Chart** panel (daqIDEA-style data acquisition) records variable values at a configurable sampling period and plots them live, with a data table, CSV/text export and savable variable configurations.
+
 > Why a separate panel? VS Code's built-in Watch view cannot be extended or modified by extensions, so this extension re-implements the watch functionality in its own view and adds live polling on top.
 
 ## Features
@@ -31,7 +33,7 @@ The **Symbols (GDB)** view (Run & Debug sidebar) browses the symbol table that G
 
 - **Categories** — *Variables*, *Constants* (`const` variables), *Functions* and *Types*, grouped by source file (module), with declaration and line info.
 - **Loaded once, cached for the session** — the full table is read automatically when the debug session starts (via `info variables` / `info functions` / `info types`, using a sampling cycle if the target is running) and kept in memory. Use **Reload Symbols** (refresh icon) only if the symbol file changed.
-- **Instant filtering** — the filter icon applies a regular expression (or plain substring) to the cached table locally; activating or clearing a filter never re-reads symbols from GDB.
+- **Live filtering as you type** — the filter icon opens an input that narrows the symbol tree on every keystroke (plain substring or regular expression, matched locally against the cached table — no GDB round-trips). Matches auto-expand while a filter is active. Press *Enter* to keep the filter, *Esc* to restore the previous one.
 - **Go to source** — click a symbol (or use the go-to icon) to open its declaration. Compile-time paths that don't exist locally are resolved by searching the workspace.
 - **Add to Live Watch** — the eye icon (or context menu) adds the symbol to the Live Watch panel, like winIDEA's double-click-to-watch.
 
@@ -43,6 +45,27 @@ Symbol browser settings:
 | `gdbSymbols.maxSymbolsPerCategory` | `2000` | Cap per category; use the filter to narrow large tables. |
 | `gdbSymbols.includeNonDebugging` | `false` | Also list symbols without debug info (stripped exports). |
 | `gdbSymbols.fileScopedExpressions` | `false` | Add watch expressions as `'file.c'::symbol` to disambiguate statics (winIDEA-style file suffix). |
+
+## DAQ Chart (data acquisition)
+
+Open it with the chart icon in the **Live Watch (GDB)** view title or the **GDB DAQ: Open DAQ Chart** command. Variables can be added directly in the panel, or via *Add to DAQ Chart* in the context menu of Live Watch entries and Symbol browser entries.
+
+- **Visualize acquired data** — every dot on the chart is one acquired sample. While the chart is left alone it auto-fits and always shows the maximum amount of the latest data; once you interact with it you are in manual mode:
+  - mouse **wheel** zooms the time axis around the cursor,
+  - **Shift/Ctrl + wheel** stretches the value axis,
+  - **drag** pans, **double-click** (or the *Fit* button) returns to auto-follow.
+  - Dense data is automatically decimated (min/max per pixel column) so the chart stays responsive with 100k+ samples.
+- **Configurable sampling period** — `max`, `1 ms`, `10 ms`, `100 ms`, `1 s`. `max` acquires back-to-back as fast as the debug adapter allows. Short periods are an upper bound: the real achievable rate depends on the GDB round-trip (non-stop direct reads are fastest; pause→read→continue sampling is slower). The status bar in the panel shows the actually achieved rate.
+- **Data table** — in the lower right corner; the first column is the sample time, every other column is one variable, every row is one acquired sample (newest on top) for reading precise values.
+- **Export acquired data** — *Export…* writes all samples to a `.csv` (Excel-compatible) or tab-separated `.txt` file.
+- **Variable configuration files** — *Save Config…* / *Load Config…* store the variable list and sampling period as JSON, so acquisition setups can be shared and reused. The current configuration is also persisted per workspace automatically.
+- Acquisition keeps running even if the panel is closed; reopening it resyncs all buffered data.
+
+| Setting | Default | Description |
+|---|---|---|
+| `gdbDaq.maxSamples` | `100000` | Ring buffer size per variable; oldest samples are discarded when full. |
+
+Like the Live Watch, acquisition works both with GDB non-stop targets (zero intrusion) and plain all-stop targets via transparent pause→read→continue sampling cycles.
 
 ## How polling-while-running works
 

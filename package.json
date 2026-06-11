@@ -148,6 +148,24 @@
         "command": "gdbSymbols.copyName",
         "title": "Copy Symbol Name",
         "category": "GDB Symbols"
+      },
+      {
+        "command": "gdbDaq.open",
+        "title": "Open DAQ Chart",
+        "category": "GDB DAQ",
+        "icon": "$(graph-line)"
+      },
+      {
+        "command": "gdbDaq.addFromWatch",
+        "title": "Add to DAQ Chart",
+        "category": "GDB DAQ",
+        "icon": "$(graph-line)"
+      },
+      {
+        "command": "gdbDaq.addFromSymbol",
+        "title": "Add to DAQ Chart",
+        "category": "GDB DAQ",
+        "icon": "$(graph-line)"
       }
     ],
     "menus": {
@@ -176,6 +194,11 @@
           "command": "gdbLiveWatch.removeAll",
           "when": "view == gdbLiveWatch",
           "group": "navigation@4"
+        },
+        {
+          "command": "gdbDaq.open",
+          "when": "view == gdbLiveWatch",
+          "group": "navigation@5"
         },
         {
           "command": "gdbLiveWatch.setPollingInterval",
@@ -245,6 +268,16 @@
           "group": "2_copy@2"
         },
         {
+          "command": "gdbDaq.addFromWatch",
+          "when": "view == gdbLiveWatch",
+          "group": "1_modify@3"
+        },
+        {
+          "command": "gdbDaq.addFromSymbol",
+          "when": "view == gdbSymbols && viewItem =~ /gdbSymbols\\.symbol/",
+          "group": "1_actions@3"
+        },
+        {
           "command": "gdbSymbols.addToLiveWatch",
           "when": "view == gdbSymbols && viewItem =~ /gdbSymbols\\.symbol/",
           "group": "inline@1"
@@ -309,6 +342,14 @@
         {
           "command": "gdbSymbols.copyName",
           "when": "false"
+        },
+        {
+          "command": "gdbDaq.addFromWatch",
+          "when": "false"
+        },
+        {
+          "command": "gdbDaq.addFromSymbol",
+          "when": "false"
         }
       ]
     },
@@ -372,6 +413,12 @@
           "type": "boolean",
           "default": false,
           "description": "When adding a symbol to the Live Watch, qualify it with its source file ('file.c'::symbol) so static variables with identical names in different files are unambiguous (similar to winIDEA's file/process suffix)."
+        },
+        "gdbDaq.maxSamples": {
+          "type": "number",
+          "default": 100000,
+          "minimum": 1000,
+          "description": "Maximum number of acquired samples kept in the DAQ buffer per variable. Once full, the oldest samples are discarded (ring buffer)."
         }
       }
     }

@@ -45,15 +45,27 @@ export class SymbolTreeProvider implements vscode.TreeDataProvider<SymbolNode> {
         }
     }
 
+    /**
+     * VS Code preserves expansion state per item id. While a filter is active
+     * the ids are suffixed with it, so every filter change yields "new" nodes
+     * that pick up the expanded-by-default state and reveal the matches.
+     */
+    private idSuffix(): string {
+        return this.service.filter ? `?${this.service.filter}` : '';
+    }
+
     private categoryItem(category: SymbolCategory): vscode.TreeItem {
         const count = this.service.getCategory(category).length;
+        const filtered = !!this.service.filter;
         const item = new vscode.TreeItem(
             CATEGORY_LABELS[category],
-            count > 0
-                ? vscode.TreeItemCollapsibleState.Collapsed
-                : vscode.TreeItemCollapsibleState.None
+            count === 0
+                ? vscode.TreeItemCollapsibleState.None
+                : filtered
+                    ? vscode.TreeItemCollapsibleState.Expanded
+                    : vscode.TreeItemCollapsibleState.Collapsed
         );
-        item.id = `cat:${category}`;
+        item.id = `cat:${category}${this.idSuffix()}`;
         item.description = this.service.isTruncated(category) ? `${count}+ (truncated)` : `${count}`;
         item.iconPath = new vscode.ThemeIcon(CATEGORY_ICONS[category]);
         item.contextValue = 'gdbSymbols.category';
@@ -63,8 +75,13 @@ export class SymbolTreeProvider implements vscode.TreeDataProvider<SymbolNode> {
     private fileItem(node: SymbolNode & { kind: 'file' }): vscode.TreeItem {
         const isReal = node.file !== NO_FILE;
         const base = isReal ? path.basename(node.file) : node.file;
-        const item = new vscode.TreeItem(base, vscode.TreeItemCollapsibleState.Collapsed);
-        item.id = `file:${node.category}:${node.file}`;
+        const item = new vscode.TreeItem(
+            base,
+            this.service.filter
+                ? vscode.TreeItemCollapsibleState.Expanded
+                : vscode.TreeItemCollapsibleState.Collapsed
+        );
+        item.id = `file:${node.category}:${node.file}${this.idSuffix()}`;
         const dir = isReal ? path.dirname(node.file) : '';
         item.description = `${node.entries.length}${dir && dir !== '.' ? ` - ${dir}` : ''}`;
         item.iconPath = vscode.ThemeIcon.File;

@@ -6,6 +6,8 @@ import { Poller } from './poller';
 import { DebugSessionTracker } from './tracker';
 import { SymbolEntry, SymbolService, watchExpressionFor } from './symbols';
 import { SymbolNode, SymbolTreeProvider } from './symbolsProvider';
+import { DaqEngine } from './daq';
+import { DaqPanelManager } from './daqPanel';
 
 export function activate(context: vscode.ExtensionContext): void {
     const model = new LiveWatchModel(context.workspaceState);
@@ -14,6 +16,8 @@ export function activate(context: vscode.ExtensionContext): void {
     const provider = new LiveWatchTreeProvider(model);
     const symbols = new SymbolService(tracker, poller);
     const symbolsProvider = new SymbolTreeProvider(symbols);
+    const daq = new DaqEngine(context.workspaceState, poller);
+    const daqPanel = new DaqPanelManager(context, daq);
 
     const treeView = vscode.window.createTreeView('gdbLiveWatch', {
         treeDataProvider: provider,
@@ -117,6 +121,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 poller.stop();
                 model.invalidate();
                 symbols.clear();
+                daq.stop();
             }
             updateStatusBar();
         }),
@@ -298,19 +303,48 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('gdbSymbols.load', () => loadSymbols(true)),
 
         vscode.commands.registerCommand('gdbSymbols.search', async () => {
-            const value = await vscode.window.showInputBox({
-                prompt: 'Filter loaded symbols by name (regular expression or plain substring) - applied instantly, no reload',
-                placeHolder: 'e.g. ^counter, motor_.*, Adc',
-                value: symbols.filter
-            });
-            if (value === undefined) {
-                return;
-            }
-            symbols.filter = value.trim();
             // If nothing is cached yet (e.g. auto-load disabled), load once now.
             if (!symbols.hasData && vscode.debug.activeDebugSession) {
                 await loadSymbols(false);
             }
+
+            // Live filter: every keystroke narrows the symbol tree immediately.
+            const previous = symbols.filter;
+            const input = vscode.window.createInputBox();
+            input.title = 'Filter Symbols (live)';
+            input.prompt =
+                'Type to filter symbol names as you type (substring or regular expression). Enter keeps the filter, Esc restores the previous one.';
+            input.placeholder = 'e.g. Something, ^motor_, Adc.*Init';
+            input.value = previous;
+
+            let debounce: ReturnType<typeof setTimeout> | undefined;
+            let accepted = false;
+            input.onDidChangeValue((value) => {
+                if (debounce) {
+                    clearTimeout(debounce);
+                }
+                debounce = setTimeout(() => {
+                    symbols.filter = value.trim();
+                }, 120);
+            });
+            input.onDidAccept(() => {
+                accepted = true;
+                if (debounce) {
+                    clearTimeout(debounce);
+                }
+                symbols.filter = input.value.trim();
+                input.hide();
+            });
+            input.onDidHide(() => {
+                if (debounce) {
+                    clearTimeout(debounce);
+                }
+                if (!accepted) {
+                    symbols.filter = previous;
+                }
+                input.dispose();
+            });
+            input.show();
         }),
 
         vscode.commands.registerCommand('gdbSymbols.clearFilter', () => {
@@ -341,7 +375,29 @@ export function activate(context: vscode.ExtensionContext): void {
         })
     );
 
-    context.subscriptions.push(treeView, symbolsView, statusBar, model, tracker, poller, symbols);
+    // ---- DAQ chart commands --------------------------------------------------
+    context.subscriptions.push(
+        vscode.commands.registerCommand('gdbDaq.open', () => daqPanel.show()),
+
+        vscode.commands.registerCommand('gdbDaq.addFromWatch', (node: WatchNode) => {
+            const expr = node?.expression || node?.name;
+            if (expr) {
+                daq.addVariable(expr);
+                daqPanel.show();
+            }
+        }),
+
+        vscode.commands.registerCommand('gdbDaq.addFromSymbol', (node: SymbolNode) => {
+            if (node?.kind === 'symbol') {
+                daq.addVariable(watchExpressionFor(node.entry));
+                daqPanel.show();
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        treeView, symbolsView, statusBar, model, tracker, poller, symbols, daq, daqPanel
+    );
 }
 
 /**

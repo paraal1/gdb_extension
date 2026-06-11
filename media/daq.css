@@ -1,0 +1,266 @@
+html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    color: var(--vscode-foreground);
+    background: var(--vscode-editor-background);
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+}
+
+/* ---- toolbar ---- */
+
+#toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--vscode-panel-border, #444);
+    flex: none;
+    flex-wrap: wrap;
+}
+
+#toolbar button {
+    background: var(--vscode-button-secondaryBackground, #3a3d41);
+    color: var(--vscode-button-secondaryForeground, #ccc);
+    border: 1px solid var(--vscode-button-border, transparent);
+    border-radius: 2px;
+    padding: 3px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: inherit;
+}
+
+#toolbar button:hover:not(:disabled) {
+    background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+#toolbar button:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+#toolbar button.primary {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+
+#toolbar button.primary:hover:not(:disabled) {
+    background: var(--vscode-button-hoverBackground);
+}
+
+#toolbar button.recording {
+    background: var(--vscode-statusBarItem-errorBackground, #c72e2e);
+    color: var(--vscode-statusBarItem-errorForeground, #fff);
+}
+
+#toolbar select {
+    background: var(--vscode-dropdown-background);
+    color: var(--vscode-dropdown-foreground);
+    border: 1px solid var(--vscode-dropdown-border, transparent);
+    padding: 2px 4px;
+    font-family: inherit;
+    font-size: inherit;
+}
+
+#toolbar .sep {
+    width: 1px;
+    height: 18px;
+    background: var(--vscode-panel-border, #444);
+    margin: 0 2px;
+}
+
+#status {
+    margin-left: auto;
+    opacity: 0.8;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+#status .rec {
+    color: var(--vscode-errorForeground, #f48771);
+    font-weight: bold;
+}
+
+/* ---- chart ---- */
+
+#chartArea {
+    flex: 1 1 auto;
+    position: relative;
+    min-height: 120px;
+}
+
+#chart {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    cursor: crosshair;
+}
+
+#hint {
+    position: absolute;
+    right: 8px;
+    top: 4px;
+    font-size: 0.85em;
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+/* ---- bottom: variables + data table ---- */
+
+#bottom {
+    flex: none;
+    height: 220px;
+    display: flex;
+    border-top: 1px solid var(--vscode-panel-border, #444);
+    min-height: 0;
+}
+
+.panelTitle {
+    flex: none;
+    padding: 4px 8px;
+    font-weight: bold;
+    opacity: 0.8;
+    border-bottom: 1px solid var(--vscode-panel-border, #444);
+}
+
+#varsPanel {
+    flex: 0 0 40%;
+    max-width: 480px;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--vscode-panel-border, #444);
+    min-width: 220px;
+}
+
+#varList {
+    flex: 1 1 auto;
+    overflow-y: auto;
+}
+
+.varRow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+}
+
+.varRow:hover {
+    background: var(--vscode-list-hoverBackground, #2a2d2e);
+}
+
+.varRow .swatch {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+}
+
+.varRow .expr {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.varRow .expr.disabled {
+    opacity: 0.5;
+    text-decoration: line-through;
+}
+
+.varRow .val {
+    flex: none;
+    font-family: var(--vscode-editor-font-family, monospace);
+    opacity: 0.85;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.varRow .remove {
+    flex: none;
+    background: none;
+    border: none;
+    color: var(--vscode-foreground);
+    opacity: 0.5;
+    cursor: pointer;
+    padding: 0 4px;
+    font-size: 1em;
+}
+
+.varRow .remove:hover {
+    opacity: 1;
+    color: var(--vscode-errorForeground, #f48771);
+}
+
+#addRow {
+    flex: none;
+    display: flex;
+    gap: 6px;
+    padding: 6px 8px;
+    border-top: 1px solid var(--vscode-panel-border, #444);
+}
+
+#addRow input {
+    flex: 1 1 auto;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, transparent);
+    padding: 3px 6px;
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+#addRow button {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border: none;
+    border-radius: 2px;
+    padding: 3px 12px;
+    cursor: pointer;
+}
+
+#tablePanel {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+#tableWrap {
+    flex: 1 1 auto;
+    overflow: auto;
+}
+
+#dataTable {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-variant-numeric: tabular-nums;
+}
+
+#dataTable th, #dataTable td {
+    text-align: right;
+    padding: 2px 10px;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--vscode-panel-border, #333);
+}
+
+#dataTable th {
+    position: sticky;
+    top: 0;
+    background: var(--vscode-editor-background);
+    border-bottom: 1px solid var(--vscode-panel-border, #555);
+}
+
+#dataTable tbody tr:first-child {
+    color: var(--vscode-charts-yellow, #e2c08d);
+}
