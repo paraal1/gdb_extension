@@ -605,11 +605,6 @@
           "default": false,
           "description": "Display values in hexadecimal format (default for expressions without a per-expression format)."
         },
-        "gdbLiveWatch.sparklines": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show a compact inline trend sparkline next to each watched value."
-        },
         "gdbSymbols.autoLoad": {
           "type": "boolean",
           "default": true,

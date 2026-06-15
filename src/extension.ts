@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { DisplayOptions, isGroup, LiveWatchModel, ValueFormat, WatchGroup, WatchNode } from './model';
-import { LiveWatchTreeProvider } from './provider';
+import { LiveWatchDragAndDropController, LiveWatchTreeProvider } from './provider';
 import { Poller } from './poller';
 import { DebugSessionTracker } from './tracker';
 import { SymbolEntry, SymbolService, watchExpressionFor } from './symbols';
@@ -21,6 +21,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const treeView = vscode.window.createTreeView('gdbLiveWatch', {
         treeDataProvider: provider,
+        dragAndDropController: new LiveWatchDragAndDropController(model),
         showCollapseAll: true,
         canSelectMany: false
     });

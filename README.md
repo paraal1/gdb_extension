@@ -16,7 +16,6 @@ On top of that, a **DAQ Chart** panel (daqIDEA-style data acquisition) records v
 - **Familiar watch functionality** — add / edit / remove / remove-all expressions, expand structs, arrays and pointers, copy value / copy expression, hex display toggle, change highlighting (yellow dot when a value changed since the last poll), error display for invalid expressions.
 - **Watch groups** — organize expressions into named, collapsible folders (toolbar *Add Group*, then *Add Expression to Group* / *Move to Group...*). Save and load the whole watch list (groups + expressions) as JSON for reuse across sessions and machines.
 - **Per-expression display format** — right-click an expression → *Set Display Format...* for natural / decimal / hex / octal / binary, or *Set Scale / Unit...* to show `raw * scale + offset` with a unit label (e.g. read a fixed-point integer as `12.5 V`). Overrides the global hex toggle per row.
-- **Inline sparklines** — a compact unicode trend of recent values is shown next to each watched value (toggle with `gdbLiveWatch.sparklines`).
 - **Copy for reports** — *Copy Value with Timestamp* and *Copy All as Table* (tab-separated snapshot of every group/expression).
 - **Set Value** — write a new value to any expression or expanded struct/array member (right-click → *Set Value*, or the pencil icon on members). Works while the target is running too: in non-stop mode the value is written directly; otherwise the extension performs a single pause → write → continue cycle.
 - **Adapter agnostic** — talks plain DAP to the active debug session, so it works with `cppdbg` (ms-vscode.cpptools), `cortex-debug`, and other GDB-based debug adapters.
@@ -134,7 +133,6 @@ If you must sample while running, keep `gdbLiveWatch.adaptivePolling` on and use
 | `gdbLiveWatch.adaptivePolling` | `true` | When sampling, automatically stretch the interval so the target is paused at most ~20% of the time (avoids choking timing-sensitive models). |
 | `gdbLiveWatch.maxChildren` | `100` | Max children shown when expanding a variable. |
 | `gdbLiveWatch.hexFormat` | `false` | Default hex display for expressions without a per-expression format. |
-| `gdbLiveWatch.sparklines` | `true` | Show a compact inline trend sparkline next to each watched value. |
 
 The status bar item distinguishes the live state: *live* (direct non-stop reads), *sampling* (pause→read→continue, with the per-cycle pause cost and any adaptive back-off in the tooltip), *stopped* (at a breakpoint), or *off*.
 

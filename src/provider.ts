@@ -1,9 +1,6 @@
 import * as vscode from 'vscode';
 import { isGroup, LiveWatchModel, WatchGroup, WatchNode, WatchTreeNode } from './model';
 
-/** Unicode block characters for the inline value sparkline. */
-const SPARK_CHARS = ['\u2581', '\u2582', '\u2583', '\u2584', '\u2585', '\u2586', '\u2587', '\u2588'];
-
 export class LiveWatchTreeProvider implements vscode.TreeDataProvider<WatchTreeNode> {
     private readonly changeEmitter = new vscode.EventEmitter<WatchTreeNode | undefined>();
     readonly onDidChangeTreeData = this.changeEmitter.event;
@@ -35,8 +32,7 @@ export class LiveWatchTreeProvider implements vscode.TreeDataProvider<WatchTreeN
 
         const item = new vscode.TreeItem(node.name, state);
         item.id = node.id;
-        const spark = this.sparkline(node);
-        item.description = spark ? `${node.value}  ${spark}` : node.value;
+        item.description = node.value;
         item.contextValue = node.isRoot ? 'gdbLiveWatch.expression' : 'gdbLiveWatch.variable';
 
         const lines = [`${node.expression || node.name} = ${node.value}`];
@@ -70,33 +66,6 @@ export class LiveWatchTreeProvider implements vscode.TreeDataProvider<WatchTreeN
         return item;
     }
 
-    /** Compact unicode trend of the last few numeric samples (roots only). */
-    private sparkline(node: WatchNode): string {
-        if (!node.isRoot || node.error || !node.history || node.history.length < 2) {
-            return '';
-        }
-        const enabled = vscode.workspace
-            .getConfiguration('gdbLiveWatch')
-            .get<boolean>('sparklines', true);
-        if (!enabled) {
-            return '';
-        }
-        const h = node.history;
-        let min = Infinity;
-        let max = -Infinity;
-        for (const v of h) {
-            if (v < min) { min = v; }
-            if (v > max) { max = v; }
-        }
-        const span = max - min;
-        return h
-            .map((v) => {
-                const idx = span > 0 ? Math.round(((v - min) / span) * (SPARK_CHARS.length - 1)) : 0;
-                return SPARK_CHARS[idx];
-            })
-            .join('');
-    }
-
     async getChildren(node?: WatchTreeNode): Promise<WatchTreeNode[]> {
         if (!node) {
             return [...this.model.groupList];
@@ -121,4 +90,103 @@ export class LiveWatchTreeProvider implements vscode.TreeDataProvider<WatchTreeN
         }
         return node.parent ?? node.group;
     }
+}
+
+/** MIME type used to carry dragged live-watch items within the tree. */
+const LIVE_WATCH_MIME = 'application/vnd.code.tree.gdblivewatch';
+
+/**
+ * Enables drag & drop in the Live Watch tree: reorder root expressions up/down
+ * within a group, drag them into another group, and reorder the groups
+ * themselves. Struct/array children are not draggable (they mirror live data).
+ */
+export class LiveWatchDragAndDropController
+    implements vscode.TreeDragAndDropController<WatchTreeNode>
+{
+    readonly dragMimeTypes = [LIVE_WATCH_MIME];
+    readonly dropMimeTypes = [LIVE_WATCH_MIME];
+
+    constructor(private readonly model: LiveWatchModel) {}
+
+    handleDrag(
+        source: readonly WatchTreeNode[],
+        dataTransfer: vscode.DataTransfer
+    ): void {
+        // Only root expressions and groups can be moved; carry stable ids so
+        // the drop handler can resolve the live model objects.
+        const ids = source
+            .filter((n) => isGroup(n) || n.isRoot)
+            .map((n) => n.id);
+        if (ids.length === 0) {
+            return;
+        }
+        dataTransfer.set(LIVE_WATCH_MIME, new vscode.DataTransferItem(ids));
+    }
+
+    handleDrop(
+        target: WatchTreeNode | undefined,
+        dataTransfer: vscode.DataTransfer
+    ): void {
+        const item = dataTransfer.get(LIVE_WATCH_MIME);
+        if (!item) {
+            return;
+        }
+        const ids: string[] = Array.isArray(item.value) ? item.value : [];
+        const groups: WatchGroup[] = [];
+        const roots: WatchNode[] = [];
+        for (const id of ids) {
+            const g = this.model.findGroupById(id);
+            if (g) {
+                groups.push(g);
+                continue;
+            }
+            const n = this.model.findById(id);
+            if (n?.isRoot) {
+                roots.push(n);
+            }
+        }
+
+        // Reordering groups takes precedence when a group is being dragged.
+        if (groups.length > 0) {
+            const beforeGroup = target
+                ? isGroup(target)
+                    ? target
+                    : target.group
+                : undefined;
+            for (const g of groups) {
+                this.model.moveGroup(g, beforeGroup);
+            }
+            return;
+        }
+
+        if (roots.length === 0) {
+            return;
+        }
+
+        let targetGroup: WatchGroup | undefined;
+        let before: WatchNode | undefined;
+        if (!target) {
+            const list = this.model.groupList;
+            targetGroup = list[list.length - 1];
+        } else if (isGroup(target)) {
+            targetGroup = target;
+        } else {
+            const root = rootAncestor(target);
+            targetGroup = root?.group;
+            before = root;
+        }
+
+        if (targetGroup) {
+            this.model.moveRoots(roots, targetGroup, before);
+        }
+    }
+}
+
+/** Walks up from any node to its owning root expression. */
+function rootAncestor(node: WatchNode): WatchNode | undefined {
+    let n: WatchNode | undefined = node;
+    while (n && !n.isRoot) {
+        n = n.parent;
+    }
+    return n ?? undefined;
 }

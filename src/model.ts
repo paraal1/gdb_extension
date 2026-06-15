@@ -34,8 +34,6 @@ export interface WatchNode {
     display?: DisplayOptions;
     /** Owning group (roots only). */
     group?: WatchGroup;
-    /** Recent numeric values for the inline sparkline (roots only). */
-    history?: number[];
 }
 
 /** A named, collapsible folder of watch expressions. */
@@ -62,9 +60,6 @@ interface PersistedGroup {
     name: string;
     expressions: PersistedExpression[];
 }
-
-/** Length of the rolling per-expression history used for sparklines. */
-const HISTORY_LEN = 32;
 
 const STORAGE_KEY = 'gdbLiveWatch.expressions';
 const GROUPS_KEY = 'gdbLiveWatch.groups';
@@ -217,7 +212,6 @@ export class LiveWatchModel implements vscode.Disposable {
         node.changed = false;
         node.error = false;
         node.children = undefined;
-        node.history = undefined;
         this.persist();
         this.changeEmitter.fire();
     }
@@ -247,6 +241,72 @@ export class LiveWatchModel implements vscode.Disposable {
         node.group = group;
         group.roots.push(node);
         this.reindex(group);
+        this.persist();
+        this.changeEmitter.fire();
+    }
+
+    /** Finds a group by its stable id. */
+    findGroupById(id: string): WatchGroup | undefined {
+        return this.groups.find((g) => g.id === id);
+    }
+
+    /**
+     * Moves one or more root expressions into a target group (drag & drop).
+     * If {@link before} is given (and lives in the target group) the nodes are
+     * inserted just before it; otherwise they are appended to the end. Used to
+     * reorder expressions within a group and to move them between groups.
+     */
+    moveRoots(nodes: readonly WatchNode[], target: WatchGroup, before?: WatchNode): void {
+        const roots = nodes.filter((n) => n.isRoot && n.group);
+        if (roots.length === 0) {
+            return;
+        }
+        // Detach every dragged node from its current group first so insertion
+        // indices are computed against the post-removal layout.
+        for (const n of roots) {
+            const g = n.group!;
+            const i = g.roots.indexOf(n);
+            if (i >= 0) {
+                g.roots.splice(i, 1);
+            }
+        }
+        let insertAt = target.roots.length;
+        if (before && before.group === target) {
+            const bi = target.roots.indexOf(before);
+            if (bi >= 0) {
+                insertAt = bi;
+            }
+        }
+        for (const n of roots) {
+            n.group = target;
+        }
+        target.roots.splice(insertAt, 0, ...roots);
+        // Reindex everything: removals/insertions shift the stable ids.
+        for (const g of this.groups) {
+            this.reindex(g);
+        }
+        this.persist();
+        this.changeEmitter.fire();
+    }
+
+    /**
+     * Reorders a group (drag & drop). If {@link before} is given the group is
+     * placed just before it; otherwise it is moved to the end of the list.
+     */
+    moveGroup(group: WatchGroup, before?: WatchGroup): void {
+        const cur = this.groups.indexOf(group);
+        if (cur < 0 || group === before) {
+            return;
+        }
+        this.groups.splice(cur, 1);
+        let insertAt = this.groups.length;
+        if (before) {
+            const bi = this.groups.indexOf(before);
+            if (bi >= 0) {
+                insertAt = bi;
+            }
+        }
+        this.groups.splice(insertAt, 0, group);
         this.persist();
         this.changeEmitter.fire();
     }
@@ -404,7 +464,6 @@ export class LiveWatchModel implements vscode.Disposable {
                 root.variablesReference = resp.variablesReference ?? 0;
                 root.changed = oldValue !== undefined && oldValue !== root.value;
                 root.error = false;
-                this.pushHistory(root, raw);
                 succeeded++;
             } catch (e: any) {
                 root.value = shortError(e);
@@ -424,20 +483,6 @@ export class LiveWatchModel implements vscode.Disposable {
         }
         this.changeEmitter.fire();
         return { total: roots.length, succeeded };
-    }
-
-    private pushHistory(node: WatchNode, raw: string): void {
-        const num = simpleNumeric(raw);
-        if (num === null) {
-            return;
-        }
-        if (!node.history) {
-            node.history = [];
-        }
-        node.history.push(num);
-        if (node.history.length > HISTORY_LEN) {
-            node.history.shift();
-        }
     }
 
     private async refreshExpanded(session: vscode.DebugSession, node: WatchNode): Promise<void> {
