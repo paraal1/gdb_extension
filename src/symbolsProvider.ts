@@ -9,6 +9,7 @@ import {
 } from './symbols';
 
 export type SymbolNode =
+    | { kind: 'favorites' }
     | { kind: 'category'; category: SymbolCategory }
     | { kind: 'file'; category: SymbolCategory; file: string; entries: SymbolEntry[] }
     | { kind: 'symbol'; entry: SymbolEntry };
@@ -36,6 +37,8 @@ export class SymbolTreeProvider implements vscode.TreeDataProvider<SymbolNode> {
 
     getTreeItem(node: SymbolNode): vscode.TreeItem {
         switch (node.kind) {
+            case 'favorites':
+                return this.favoritesItem();
             case 'category':
                 return this.categoryItem(node.category);
             case 'file':
@@ -43,6 +46,16 @@ export class SymbolTreeProvider implements vscode.TreeDataProvider<SymbolNode> {
             case 'symbol':
                 return this.symbolItem(node.entry);
         }
+    }
+
+    private favoritesItem(): vscode.TreeItem {
+        const count = this.service.getFavorites().length;
+        const item = new vscode.TreeItem('Favorites', vscode.TreeItemCollapsibleState.Expanded);
+        item.id = `favorites${this.idSuffix()}`;
+        item.description = `${count}`;
+        item.iconPath = new vscode.ThemeIcon('star-full', new vscode.ThemeColor('charts.yellow'));
+        item.contextValue = 'gdbSymbols.favorites';
+        return item;
     }
 
     /**
@@ -93,7 +106,10 @@ export class SymbolTreeProvider implements vscode.TreeDataProvider<SymbolNode> {
 
     private symbolItem(entry: SymbolEntry): vscode.TreeItem {
         const item = new vscode.TreeItem(entry.name, vscode.TreeItemCollapsibleState.None);
-        item.iconPath = new vscode.ThemeIcon(CATEGORY_ICONS[entry.category]);
+        const favorite = this.service.isFavorite(entry.name);
+        item.iconPath = favorite
+            ? new vscode.ThemeIcon('star-full', new vscode.ThemeColor('charts.yellow'))
+            : new vscode.ThemeIcon(CATEGORY_ICONS[entry.category]);
         item.description = entry.nonDebugging ? entry.address : entry.declaration;
 
         const lines = [entry.declaration];
@@ -104,10 +120,15 @@ export class SymbolTreeProvider implements vscode.TreeDataProvider<SymbolNode> {
             lines.push(`address: ${entry.address}`);
         }
         lines.push(`category: ${CATEGORY_LABELS[entry.category]}`);
+        if (favorite) {
+            lines.push('\u2605 favorite');
+        }
         item.tooltip = lines.join('\n');
 
         const locatable = !!entry.file;
-        item.contextValue = locatable ? 'gdbSymbols.symbolWithLocation' : 'gdbSymbols.symbol';
+        // Composite context value so menus can match on capabilities via regex:
+        //   gdbSymbols.symbol[.loc][.fav]
+        item.contextValue = `gdbSymbols.symbol${locatable ? '.loc' : ''}${favorite ? '.fav' : ''}`;
         if (locatable) {
             item.command = {
                 command: 'gdbSymbols.goTo',
@@ -123,7 +144,17 @@ export class SymbolTreeProvider implements vscode.TreeDataProvider<SymbolNode> {
             if (!this.service.hasData) {
                 return [];
             }
-            return SYMBOL_CATEGORIES.map((category) => ({ kind: 'category', category }));
+            const roots: SymbolNode[] = SYMBOL_CATEGORIES.map((category) => ({
+                kind: 'category',
+                category
+            }));
+            if (this.service.hasFavorites) {
+                roots.unshift({ kind: 'favorites' });
+            }
+            return roots;
+        }
+        if (node.kind === 'favorites') {
+            return this.service.getFavorites().map((entry) => ({ kind: 'symbol', entry }));
         }
         if (node.kind === 'category') {
             return this.groupByFile(node.category);

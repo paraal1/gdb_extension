@@ -17,6 +17,13 @@
     let recording = false;
     let periodMs = 100;
     let maxSamples = 100000;
+    let lineWidth = 1.25;
+    let showMarkers = true;
+
+    /** @type {{enabled:boolean, sourceId:string, edge:string, level:number, mode:string, preTriggerFraction:number, windowSamples:number}} */
+    let trigger = { enabled: false, sourceId: '', edge: 'rising', level: 0, mode: 'normal', preTriggerFraction: 0.25, windowSamples: 2000 };
+    let triggerState = 'idle';
+    let triggerTime = null;
 
     const MAX_TABLE_ROWS = 200;
 
@@ -26,12 +33,24 @@
     const btnStart = $('btnStart');
     const btnStop = $('btnStop');
     const btnFit = $('btnFit');
+    const btnCursors = $('btnCursors');
     const btnClear = $('btnClear');
+    const readoutEl = $('readout');
     const btnExport = $('btnExport');
+    const btnCopyTable = $('btnCopyTable');
     const btnSaveCfg = $('btnSaveCfg');
     const btnLoadCfg = $('btnLoadCfg');
     const periodSelect = $('period');
     const statusEl = $('status');
+    const trigEnabled = $('trigEnabled');
+    const trigSource = $('trigSource');
+    const trigEdge = $('trigEdge');
+    const trigLevel = $('trigLevel');
+    const trigMode = $('trigMode');
+    const trigPre = $('trigPre');
+    const trigWindow = $('trigWindow');
+    const trigStatusEl = $('trigStatus');
+    const triggerBar = $('triggerBar');
     const varListEl = $('varList');
     const addInput = $('addInput');
     const btnAdd = $('btnAdd');
@@ -46,12 +65,48 @@
     btnStop.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
     btnClear.addEventListener('click', () => vscode.postMessage({ type: 'clear' }));
     btnExport.addEventListener('click', () => vscode.postMessage({ type: 'export' }));
+    btnCopyTable.addEventListener('click', () => vscode.postMessage({ type: 'copyTable' }));
     btnSaveCfg.addEventListener('click', () => vscode.postMessage({ type: 'saveConfig' }));
     btnLoadCfg.addEventListener('click', () => vscode.postMessage({ type: 'loadConfig' }));
     btnFit.addEventListener('click', () => { view.auto = true; requestRender(); });
+    btnCursors.addEventListener('click', () => {
+        cursorMode = !cursorMode;
+        btnCursors.classList.toggle('active', cursorMode);
+        if (!cursorMode) {
+            cursors.a = null;
+            cursors.b = null;
+            hoverT = null;
+        }
+        renderReadout();
+        requestRender();
+    });
     periodSelect.addEventListener('change', () =>
         vscode.postMessage({ type: 'setPeriod', ms: Number(periodSelect.value) })
     );
+
+    function sendTrigger() {
+        const pre = Math.min(95, Math.max(0, Number(trigPre.value) || 0)) / 100;
+        const win = Math.max(2, Number(trigWindow.value) || 2);
+        const next = {
+            enabled: trigEnabled.checked,
+            sourceId: trigSource.value,
+            edge: trigEdge.value,
+            level: Number(trigLevel.value) || 0,
+            mode: trigMode.value,
+            preTriggerFraction: pre,
+            windowSamples: win
+        };
+        trigger = next;
+        vscode.postMessage({ type: 'setTrigger', trigger: next });
+        renderTriggerBar();
+    }
+    trigEnabled.addEventListener('change', sendTrigger);
+    trigSource.addEventListener('change', sendTrigger);
+    trigEdge.addEventListener('change', sendTrigger);
+    trigMode.addEventListener('change', sendTrigger);
+    trigLevel.addEventListener('change', sendTrigger);
+    trigPre.addEventListener('change', sendTrigger);
+    trigWindow.addEventListener('change', sendTrigger);
 
     const addVariable = () => {
         const expr = addInput.value.trim();
@@ -77,6 +132,10 @@
                 recording = msg.recording;
                 periodMs = msg.periodMs;
                 maxSamples = msg.maxSamples;
+                if (msg.trigger) { trigger = msg.trigger; }
+                triggerState = msg.triggerState || 'idle';
+                triggerTime = msg.triggerTime ?? null;
+                applyStyle(msg);
                 times = msg.t.slice();
                 series.clear();
                 for (const v of variables) {
@@ -90,6 +149,10 @@
                 recording = msg.recording;
                 periodMs = msg.periodMs;
                 maxSamples = msg.maxSamples;
+                if (msg.trigger) { trigger = msg.trigger; }
+                triggerState = msg.triggerState || 'idle';
+                triggerTime = msg.triggerTime ?? null;
+                applyStyle(msg);
                 // Reconcile series columns with the variable list.
                 for (const v of variables) {
                     if (!series.has(v.id)) {
@@ -129,6 +192,7 @@
                 renderStatus();
                 renderTable();
                 renderVarValues();
+                renderReadout();
                 requestRender();
                 break;
             }
@@ -138,11 +202,28 @@
                 for (const id of series.keys()) {
                     series.set(id, []);
                 }
+                triggerTime = null;
                 view.auto = true;
                 renderAll();
                 break;
+
+            case 'style':
+                applyStyle(msg);
+                requestRender();
+                break;
         }
     });
+
+    function applyStyle(msg) {
+        if (typeof msg.lineWidth === 'number') { lineWidth = Math.max(0.5, msg.lineWidth); }
+        if (typeof msg.showMarkers === 'boolean') { showMarkers = msg.showMarkers; }
+    }
+
+    /** True when running under a light VS Code theme (body carries the class). */
+    function isLightTheme() {
+        return document.body.classList.contains('vscode-light') ||
+            document.body.classList.contains('vscode-high-contrast-light');
+    }
 
     // ---- variables panel --------------------------------------------------------------
 
@@ -185,6 +266,46 @@
             row.append(cb, swatch, expr, val, remove);
             varListEl.appendChild(row);
         }
+    }
+
+    function renderTriggerBar() {
+        // Populate source dropdown from the current variable list.
+        const prev = trigger.sourceId || trigSource.value;
+        trigSource.textContent = '';
+        for (const v of variables) {
+            const opt = document.createElement('option');
+            opt.value = v.id;
+            opt.textContent = v.expression;
+            trigSource.appendChild(opt);
+        }
+        if (variables.some((v) => v.id === prev)) {
+            trigSource.value = prev;
+        } else if (variables.length) {
+            trigSource.value = variables[0].id;
+        }
+
+        trigEnabled.checked = !!trigger.enabled;
+        trigEdge.value = trigger.edge || 'rising';
+        trigMode.value = trigger.mode || 'normal';
+        if (document.activeElement !== trigLevel) {
+            trigLevel.value = String(trigger.level ?? 0);
+        }
+        if (document.activeElement !== trigPre) {
+            trigPre.value = String(Math.round((trigger.preTriggerFraction ?? 0.25) * 100));
+        }
+        if (document.activeElement !== trigWindow) {
+            trigWindow.value = String(trigger.windowSamples ?? 2000);
+        }
+        triggerBar.classList.toggle('disabled', !trigger.enabled);
+
+        let label = '';
+        let cls = '';
+        if (trigger.enabled && recording) {
+            if (triggerState === 'armed') { label = '&#9651; WAIT'; cls = 'armed'; }
+            else if (triggerState === 'triggered') { label = '&#9650; TRIG'; cls = 'triggered'; }
+        }
+        trigStatusEl.innerHTML = label;
+        trigStatusEl.className = cls;
     }
 
     function renderVarValues() {
@@ -282,9 +403,11 @@
 
     function renderAll() {
         renderStatus();
+        renderTriggerBar();
         renderVars();
         renderTableHead();
         renderTable();
+        renderReadout();
         requestRender();
     }
 
@@ -299,6 +422,11 @@
         y0: -1,
         y1: 1
     };
+
+    // Measurement cursors (times in seconds). Click the chart to place A, then B.
+    let cursorMode = false;
+    const cursors = { a: null, b: null };
+    let hoverT = null;
 
     let renderQueued = false;
     function requestRender() {
@@ -403,7 +531,7 @@
         const yTicks = niceTicks(view.y0, view.y1, Math.max(2, Math.floor(r.h / 45)));
 
         ctx.beginPath();
-        ctx.globalAlpha = 0.25;
+        ctx.globalAlpha = isLightTheme() ? 0.35 : 0.22;
         for (const t of xTicks) {
             const x = Math.round(px(t)) + 0.5;
             ctx.moveTo(x, r.y);
@@ -445,6 +573,8 @@
             if (!col || times.length === 0) { continue; }
             drawSeries(col, v.color, px, py, r);
         }
+        drawTriggerMarkers(px, py, r);
+        drawCursors(px, r);
         ctx.restore();
 
         // empty-state hint
@@ -464,6 +594,84 @@
         }
     }
 
+    function drawTriggerMarkers(px, py, r) {
+        if (!trigger.enabled) { return; }
+        const accent = cssVar('--vscode-charts-red', '#e06c75');
+        ctx.save();
+        ctx.setLineDash([5, 4]);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = accent;
+
+        // Horizontal trigger level line (in value units).
+        const ly = py(trigger.level);
+        if (ly >= r.y - 1 && ly <= r.y + r.h + 1) {
+            ctx.globalAlpha = 0.8;
+            ctx.beginPath();
+            ctx.moveTo(r.x, ly);
+            ctx.lineTo(r.x + r.w, ly);
+            ctx.stroke();
+        }
+
+        // Vertical line at the trigger instant.
+        if (triggerTime !== null && isFinite(triggerTime)) {
+            const tx = px(triggerTime);
+            if (tx >= r.x - 1 && tx <= r.x + r.w + 1) {
+                ctx.globalAlpha = 0.9;
+                ctx.beginPath();
+                ctx.moveTo(tx, r.y);
+                ctx.lineTo(tx, r.y + r.h);
+                ctx.stroke();
+            }
+        }
+        ctx.restore();
+    }
+
+    function drawCursors(px, r) {
+        if (!cursorMode) { return; }
+        const fg = cssVar('--vscode-foreground', '#ccc');
+        const accent = cssVar('--vscode-charts-blue', '#4fc1ff');
+
+        // Shade the region between A and B.
+        if (cursors.a !== null && cursors.b !== null) {
+            const xa = px(cursors.a);
+            const xb = px(cursors.b);
+            ctx.save();
+            ctx.globalAlpha = 0.08;
+            ctx.fillStyle = accent;
+            ctx.fillRect(Math.min(xa, xb), r.y, Math.abs(xb - xa), r.h);
+            ctx.restore();
+        }
+
+        const line = (t, label, color) => {
+            if (t === null || !isFinite(t)) { return; }
+            const x = px(t);
+            if (x < r.x - 1 || x > r.x + r.w + 1) { return; }
+            ctx.save();
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = 0.9;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(x) + 0.5, r.y);
+            ctx.lineTo(Math.round(x) + 0.5, r.y + r.h);
+            ctx.stroke();
+            if (label) {
+                ctx.globalAlpha = 1;
+                ctx.fillStyle = color;
+                ctx.font = 'bold 11px ' + cssVar('--vscode-font-family', 'sans-serif');
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                ctx.fillText(label, x, r.y + 1);
+            }
+            ctx.restore();
+        };
+
+        if (hoverT !== null && cursors.b === null) {
+            line(hoverT, '', fg);
+        }
+        line(cursors.a, 'A', accent);
+        line(cursors.b, 'B', accent);
+    }
+
     function drawSeries(col, color, px, py, r) {
         // Visible index range (times are monotonically increasing).
         let i0 = lowerBound(times, view.x0) - 1;
@@ -475,7 +683,7 @@
 
         ctx.strokeStyle = color;
         ctx.fillStyle = color;
-        ctx.lineWidth = 1.25;
+        ctx.lineWidth = lineWidth;
 
         const pxPerSample = r.w / Math.max(1, count);
 
@@ -535,7 +743,7 @@
         }
         ctx.stroke();
 
-        if (pxPerSample >= 3) {
+        if (showMarkers && pxPerSample >= 3) {
             const radius = pxPerSample >= 12 ? 2.5 : 1.75;
             ctx.beginPath();
             for (let i = i0; i < i1; i++) {
@@ -625,9 +833,30 @@
         requestRender();
     }, { passive: false });
 
+    function xToTime(offsetX) {
+        const r = plotRect();
+        const fx = (offsetX - r.x) / r.w;
+        return view.x0 + fx * (view.x1 - view.x0);
+    }
+
+    function placeCursor(t) {
+        if (cursors.a === null) {
+            cursors.a = t;
+        } else if (cursors.b === null) {
+            cursors.b = t;
+        } else {
+            cursors.a = t;
+            cursors.b = null;
+        }
+        renderReadout();
+        requestRender();
+    }
+
     let dragging = null;
+    let press = null;
     canvas.addEventListener('mousedown', (e) => {
         if (e.button !== 0) { return; }
+        press = { x: e.clientX, y: e.clientY, moved: false };
         if (view.auto) {
             autoFit();
             view.auto = false;
@@ -637,6 +866,9 @@
     });
     window.addEventListener('mousemove', (e) => {
         if (!dragging) { return; }
+        if (press && (Math.abs(e.clientX - press.x) > 3 || Math.abs(e.clientY - press.y) > 3)) {
+            press.moved = true;
+        }
         const r = plotRect();
         const dx = (e.clientX - dragging.x) * (view.x1 - view.x0) / r.w;
         const dy = (e.clientY - dragging.y) * (view.y1 - view.y0) / r.h;
@@ -645,14 +877,137 @@
         dragging = { x: e.clientX, y: e.clientY };
         requestRender();
     });
-    window.addEventListener('mouseup', () => {
+    window.addEventListener('mouseup', (e) => {
+        const wasClick = press && !press.moved;
         dragging = null;
+        press = null;
         canvas.style.cursor = 'crosshair';
+        // A plain click (no drag) in cursor mode places a measurement cursor.
+        if (wasClick && cursorMode) {
+            const rect = canvas.getBoundingClientRect();
+            placeCursor(xToTime(e.clientX - rect.left));
+        }
+    });
+    // Live hover readout while in cursor mode.
+    canvas.addEventListener('mousemove', (e) => {
+        if (!cursorMode || dragging) { return; }
+        hoverT = xToTime(e.offsetX);
+        renderReadout();
+        requestRender();
+    });
+    canvas.addEventListener('mouseleave', () => {
+        if (cursorMode && hoverT !== null) {
+            hoverT = null;
+            renderReadout();
+            requestRender();
+        }
     });
     canvas.addEventListener('dblclick', () => {
         view.auto = true;
+        cursors.a = null;
+        cursors.b = null;
+        renderReadout();
         requestRender();
     });
+
+    // ---- measurement readout -----------------------------------------------
+
+    function nearestIndex(t) {
+        if (times.length === 0) { return -1; }
+        const i = lowerBound(times, t);
+        if (i <= 0) { return 0; }
+        if (i >= times.length) { return times.length - 1; }
+        return (t - times[i - 1] <= times[i] - t) ? i - 1 : i;
+    }
+
+    function valueAt(col, t) {
+        const i = nearestIndex(t);
+        return i >= 0 ? col[i] : null;
+    }
+
+    function rangeStats(col, t0, t1) {
+        const lo = Math.min(t0, t1);
+        const hi = Math.max(t0, t1);
+        let i0 = lowerBound(times, lo);
+        let i1 = lowerBound(times, hi);
+        if (i1 >= times.length) { i1 = times.length - 1; }
+        let min = Infinity, max = -Infinity, sum = 0, n = 0;
+        for (let i = i0; i <= i1; i++) {
+            const v = col[i];
+            if (v !== null && isFinite(v)) {
+                if (v < min) { min = v; }
+                if (v > max) { max = v; }
+                sum += v; n++;
+            }
+        }
+        return n ? { min, max, mean: sum / n, n } : null;
+    }
+
+    function fmt(v) {
+        return v === null || v === undefined || !isFinite(v) ? '—' : formatNumber(v);
+    }
+
+    function renderReadout() {
+        const enabled = variables.filter((v) => v.enabled);
+        const haveCursor = cursors.a !== null || (hoverT !== null && cursorMode);
+        if (!cursorMode || !haveCursor || times.length === 0 || enabled.length === 0) {
+            readoutEl.classList.add('hidden');
+            return;
+        }
+        readoutEl.classList.remove('hidden');
+
+        const a = cursors.a;
+        const b = cursors.b;
+        const single = a === null ? hoverT : null; // hover-only before A is placed
+        const showRange = a !== null && b !== null;
+
+        const rows = [];
+        if (single !== null) {
+            rows.push('<tr><th class="hdr">cursor</th><th class="hdr">value</th></tr>');
+            rows.push(`<tr><td>t</td><td>${single.toFixed(4)} s</td></tr>`);
+            for (const v of enabled) {
+                const col = series.get(v.id) || [];
+                rows.push(
+                    `<tr><td><span class="swatch" style="background:${v.color}"></span>${escapeHtml(v.expression)}</td>` +
+                    `<td>${fmt(valueAt(col, single))}</td></tr>`
+                );
+            }
+        } else {
+            const head = showRange
+                ? '<tr><th class="hdr"></th><th class="hdr">A</th><th class="hdr">B</th><th class="hdr">Δ</th><th class="hdr">min</th><th class="hdr">max</th><th class="hdr">mean</th></tr>'
+                : '<tr><th class="hdr"></th><th class="hdr">A</th></tr>';
+            rows.push(head);
+            const dt = showRange ? `${(b - a).toFixed(4)} s` : '';
+            rows.push(
+                showRange
+                    ? `<tr><td>t</td><td>${a.toFixed(4)}</td><td>${b.toFixed(4)}</td><td>${dt}</td><td></td><td></td><td></td></tr>`
+                    : `<tr><td>t</td><td>${a.toFixed(4)} s</td></tr>`
+            );
+            for (const v of enabled) {
+                const col = series.get(v.id) || [];
+                const va = valueAt(col, a);
+                const name = `<span class="swatch" style="background:${v.color}"></span>${escapeHtml(v.expression)}`;
+                if (showRange) {
+                    const vb = valueAt(col, b);
+                    const dv = (va !== null && vb !== null) ? fmt(vb - va) : '—';
+                    const st = rangeStats(col, a, b);
+                    rows.push(
+                        `<tr><td>${name}</td><td>${fmt(va)}</td><td>${fmt(vb)}</td><td>${dv}</td>` +
+                        `<td>${st ? fmt(st.min) : '—'}</td><td>${st ? fmt(st.max) : '—'}</td><td>${st ? fmt(st.mean) : '—'}</td></tr>`
+                    );
+                } else {
+                    rows.push(`<tr><td>${name}</td><td>${fmt(va)}</td></tr>`);
+                }
+            }
+        }
+        readoutEl.innerHTML = `<table>${rows.join('')}</table>`;
+    }
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"]/g, (c) =>
+            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])
+        );
+    }
 
     new ResizeObserver(() => requestRender()).observe(canvas);
 

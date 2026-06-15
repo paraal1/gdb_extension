@@ -14,6 +14,10 @@ On top of that, a **DAQ Chart** panel (daqIDEA-style data acquisition) records v
 - **Works without non-stop mode** — when GDB cannot evaluate while the target runs, the extension transparently performs *sampling cycles*: pause → read all expressions → continue. Pauses are typically only a few milliseconds.
 - **Auto mode** — tries direct (non-stop) evaluation first and automatically falls back to sampling if the adapter/target rejects it.
 - **Familiar watch functionality** — add / edit / remove / remove-all expressions, expand structs, arrays and pointers, copy value / copy expression, hex display toggle, change highlighting (yellow dot when a value changed since the last poll), error display for invalid expressions.
+- **Watch groups** — organize expressions into named, collapsible folders (toolbar *Add Group*, then *Add Expression to Group* / *Move to Group...*). Save and load the whole watch list (groups + expressions) as JSON for reuse across sessions and machines.
+- **Per-expression display format** — right-click an expression → *Set Display Format...* for natural / decimal / hex / octal / binary, or *Set Scale / Unit...* to show `raw * scale + offset` with a unit label (e.g. read a fixed-point integer as `12.5 V`). Overrides the global hex toggle per row.
+- **Inline sparklines** — a compact unicode trend of recent values is shown next to each watched value (toggle with `gdbLiveWatch.sparklines`).
+- **Copy for reports** — *Copy Value with Timestamp* and *Copy All as Table* (tab-separated snapshot of every group/expression).
 - **Set Value** — write a new value to any expression or expanded struct/array member (right-click → *Set Value*, or the pencil icon on members). Works while the target is running too: in non-stop mode the value is written directly; otherwise the extension performs a single pause → write → continue cycle.
 - **Adapter agnostic** — talks plain DAP to the active debug session, so it works with `cppdbg` (ms-vscode.cpptools), `cortex-debug`, and other GDB-based debug adapters.
 - **Persistent expressions** — watch expressions are stored per workspace and survive restarts.
@@ -36,6 +40,9 @@ The **Symbols (GDB)** view (Run & Debug sidebar) browses the symbol table that G
 - **Live filtering as you type** — the filter icon opens an input that narrows the symbol tree on every keystroke (plain substring or regular expression, matched locally against the cached table — no GDB round-trips). Matches auto-expand while a filter is active. Press *Enter* to keep the filter, *Esc* to restore the previous one.
 - **Go to source** — click a symbol (or use the go-to icon) to open its declaration. Compile-time paths that don't exist locally are resolved by searching the workspace.
 - **Add to Live Watch** — the eye icon (or context menu) adds the symbol to the Live Watch panel, like winIDEA's double-click-to-watch.
+- **Bulk add** — the symbol tree supports multi-selection (Ctrl/Shift-click), so *Add to Live Watch* / *Add to DAQ Chart* can add many symbols at once.
+- **Favorites** — star symbols (the star icon / context menu) to collect them under a *Favorites* category at the top of the tree; favorites persist per workspace.
+- **Filter history** — the history icon offers recently used filters for quick re-use.
 
 Symbol browser settings:
 
@@ -56,6 +63,10 @@ Open it with the chart icon in the **Live Watch (GDB)** view title or the **GDB 
   - **drag** pans, **double-click** (or the *Fit* button) returns to auto-follow.
   - Dense data is automatically decimated (min/max per pixel column) so the chart stays responsive with 100k+ samples.
 - **Configurable sampling period** — `max`, `1 ms`, `10 ms`, `100 ms`, `1 s`. `max` acquires back-to-back as fast as the debug adapter allows. Short periods are an upper bound: the real achievable rate depends on the GDB round-trip (non-stop direct reads are fastest; pause→read→continue sampling is slower). The status bar in the panel shows the actually achieved rate.
+- **Trigger mode (scope-style)** — enable the *Trigger* bar to capture around an event instead of logging continuously. Pick a source variable, edge (rising / falling / both), level, and a pre-trigger percentage; acquisition keeps a rolling pre-trigger buffer and commits a fixed window once the source crosses the level. Modes: *single* (stop after one capture), *normal* (re-arm for the next event), *auto* (free-run if no event occurs). The trigger level and instant are drawn on the chart.
+- **Measurement cursors** — the *Cursors* button enables click-to-place A/B cursors with a live readout of value-at-cursor, Δt, Δvalue, and min/max/mean over the selected range.
+- **Theming & style** — the chart follows the VS Code light/dark theme; line width and per-sample markers are configurable (`gdbDaq.lineWidth`, `gdbDaq.showMarkers`).
+- **Copy to clipboard** — *Copy Table* puts all acquired samples on the clipboard as tab-separated text for pasting into reports/spreadsheets.
 - **Data table** — in the lower right corner; the first column is the sample time, every other column is one variable, every row is one acquired sample (newest on top) for reading precise values.
 - **Export acquired data** — *Export…* writes all samples to a `.csv` (Excel-compatible) or tab-separated `.txt` file.
 - **Variable configuration files** — *Save Config…* / *Load Config…* store the variable list and sampling period as JSON, so acquisition setups can be shared and reused. The current configuration is also persisted per workspace automatically.
@@ -64,6 +75,8 @@ Open it with the chart icon in the **Live Watch (GDB)** view title or the **GDB 
 | Setting | Default | Description |
 |---|---|---|
 | `gdbDaq.maxSamples` | `100000` | Ring buffer size per variable; oldest samples are discarded when full. |
+| `gdbDaq.lineWidth` | `1.25` | Line width (px) for the chart traces. |
+| `gdbDaq.showMarkers` | `true` | Draw a dot at each acquired sample when the data is sparse enough. |
 
 Like the Live Watch, acquisition works both with GDB non-stop targets (zero intrusion) and plain all-stop targets via transparent pause→read→continue sampling cycles.
 
@@ -90,8 +103,12 @@ Sampling details:
 | `gdbLiveWatch.pollingInterval` | `1000` | Refresh interval in ms (min 100). |
 | `gdbLiveWatch.mode` | `auto` | `auto` / `nonStop` / `sample` (see above). |
 | `gdbLiveWatch.autoStartPolling` | `true` | Start polling automatically when a debug session starts. |
+| `gdbLiveWatch.adaptivePolling` | `true` | When sampling, automatically stretch the interval so the target is paused at most ~20% of the time (avoids choking timing-sensitive models). |
 | `gdbLiveWatch.maxChildren` | `100` | Max children shown when expanding a variable. |
-| `gdbLiveWatch.hexFormat` | `false` | Display values in hexadecimal. |
+| `gdbLiveWatch.hexFormat` | `false` | Default hex display for expressions without a per-expression format. |
+| `gdbLiveWatch.sparklines` | `true` | Show a compact inline trend sparkline next to each watched value. |
+
+The status bar item distinguishes the live state: *live* (direct non-stop reads), *sampling* (pause→read→continue, with the per-cycle pause cost and any adaptive back-off in the tooltip), *stopped* (at a breakpoint), or *off*.
 
 ## VEOS notes
 

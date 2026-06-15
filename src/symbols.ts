@@ -171,18 +171,35 @@ function delay(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Builds a name matcher from the user filter: regex if valid, substring otherwise. */
+/** Single term matcher: regex if valid, case-insensitive substring otherwise. */
+function makeTermMatcher(term: string): (name: string) => boolean {
+    try {
+        const re = new RegExp(term, 'i');
+        return (name) => re.test(name);
+    } catch {
+        const needle = term.toLowerCase();
+        return (name) => name.toLowerCase().includes(needle);
+    }
+}
+
+/**
+ * Builds a name matcher from the user filter: regex if valid, substring otherwise.
+ *
+ * A trailing call suffix is tolerated so a function can be located by pasting its
+ * call/signature, e.g. "Rte_Read_R_FS2()" or "Rte_Read_R_FS2(void)" both match the
+ * stored symbol name "Rte_Read_R_FS2". The original filter is still tried as well,
+ * so deliberate regex groups like "(foo|bar)" keep working.
+ */
 function makeMatcher(filter: string): (name: string) => boolean {
     if (!filter) {
         return () => true;
     }
-    try {
-        const re = new RegExp(filter, 'i');
-        return (name) => re.test(name);
-    } catch {
-        const needle = filter.toLowerCase();
-        return (name) => name.toLowerCase().includes(needle);
+    const matchers = [makeTermMatcher(filter)];
+    const stripped = filter.replace(/\s*\([^)]*\)\s*$/, '').trim();
+    if (stripped && stripped !== filter) {
+        matchers.push(makeTermMatcher(stripped));
     }
+    return (name) => matchers.some((m) => m(name));
 }
 
 /**
@@ -192,6 +209,10 @@ function makeMatcher(filter: string): (name: string) => boolean {
  * The complete table is loaded once per debug session and cached; filtering
  * only recomputes the visible view locally, without talking to GDB again.
  */
+const FAVORITES_KEY = 'gdbSymbols.favorites';
+const FILTER_HISTORY_KEY = 'gdbSymbols.filterHistory';
+const MAX_FILTER_HISTORY = 20;
+
 export class SymbolService implements vscode.Disposable {
     /** Complete, unfiltered symbol table as loaded from GDB (sorted by name). */
     private allEntries: SymbolEntry[] = [];
@@ -200,8 +221,13 @@ export class SymbolService implements vscode.Disposable {
     /** Visible (filtered, capped) view, per category. */
     private readonly entries = new Map<SymbolCategory, SymbolEntry[]>();
     private readonly truncatedCategories = new Set<SymbolCategory>();
+    /** Favorite entries (subset of the view), in favorite order. */
+    private favoriteEntries: SymbolEntry[] = [];
     /** Console-command prefix known to work, cached per session. */
     private readonly prefixCache = new Map<string, string>();
+
+    /** Names the user has starred as favorites (persisted). */
+    private favorites: Set<string>;
 
     private _filter = '';
     loading = false;
@@ -211,8 +237,51 @@ export class SymbolService implements vscode.Disposable {
 
     constructor(
         private readonly tracker: DebugSessionTracker,
-        private readonly poller: Poller
-    ) {}
+        private readonly poller: Poller,
+        private readonly state: vscode.Memento
+    ) {
+        this.favorites = new Set(state.get<string[]>(FAVORITES_KEY, []));
+    }
+
+    // ---- favorites ----------------------------------------------------------
+
+    isFavorite(name: string): boolean {
+        return this.favorites.has(name);
+    }
+
+    toggleFavorite(name: string): void {
+        if (this.favorites.has(name)) {
+            this.favorites.delete(name);
+        } else {
+            this.favorites.add(name);
+        }
+        void this.state.update(FAVORITES_KEY, [...this.favorites]);
+        this.refreshView();
+    }
+
+    get hasFavorites(): boolean {
+        return this.favoriteEntries.length > 0;
+    }
+
+    getFavorites(): readonly SymbolEntry[] {
+        return this.favoriteEntries;
+    }
+
+    // ---- filter history -----------------------------------------------------
+
+    getFilterHistory(): string[] {
+        return this.state.get<string[]>(FILTER_HISTORY_KEY, []);
+    }
+
+    rememberFilter(filter: string): void {
+        const term = filter.trim();
+        if (!term) {
+            return;
+        }
+        const history = this.getFilterHistory().filter((f) => f !== term);
+        history.unshift(term);
+        void this.state.update(FILTER_HISTORY_KEY, history.slice(0, MAX_FILTER_HISTORY));
+    }
 
     /** Local filter (regex or substring) applied to the cached table - instant. */
     get filter(): string {
@@ -306,12 +375,16 @@ export class SymbolService implements vscode.Disposable {
 
         this.entries.clear();
         this.truncatedCategories.clear();
+        this.favoriteEntries = [];
         for (const category of SYMBOL_CATEGORIES) {
             this.entries.set(category, []);
         }
         for (const entry of this.allEntries) {
             if (entry.nonDebugging && !includeNonDebugging) {
                 continue;
+            }
+            if (this.favorites.has(entry.name)) {
+                this.favoriteEntries.push(entry);
             }
             if (!matches(entry.name)) {
                 continue;

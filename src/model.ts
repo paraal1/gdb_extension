@@ -1,5 +1,18 @@
 import * as vscode from 'vscode';
 
+/** Per-expression numeric display format (overrides the global hex toggle). */
+export type ValueFormat = 'natural' | 'dec' | 'hex' | 'bin' | 'oct';
+
+/** Optional display options applied to a root expression's value. */
+export interface DisplayOptions {
+    format?: ValueFormat;
+    /** Linear scaling applied to the numeric value: shown = raw * scale + offset. */
+    scale?: number;
+    offset?: number;
+    /** Unit label appended to the displayed value (e.g. "rpm", "V"). */
+    unit?: string;
+}
+
 export interface WatchNode {
     /** Stable id (root index + member path) so the tree keeps expansion state across refreshes. */
     id: string;
@@ -8,6 +21,8 @@ export interface WatchNode {
     /** Expression for roots; evaluateName (if any) for children. Used for "Copy Expression". */
     expression: string;
     value: string;
+    /** Raw value as reported by GDB before per-expression formatting is applied. */
+    rawValue?: string;
     type?: string;
     variablesReference: number;
     changed: boolean;
@@ -15,16 +30,61 @@ export interface WatchNode {
     isRoot: boolean;
     parent?: WatchNode;
     children?: WatchNode[];
+    /** Per-expression display options (roots only). */
+    display?: DisplayOptions;
+    /** Owning group (roots only). */
+    group?: WatchGroup;
+    /** Recent numeric values for the inline sparkline (roots only). */
+    history?: number[];
 }
 
+/** A named, collapsible folder of watch expressions. */
+export interface WatchGroup {
+    id: string;
+    name: string;
+    roots: WatchNode[];
+}
+
+export type WatchTreeNode = WatchGroup | WatchNode;
+
+export function isGroup(node: WatchTreeNode): node is WatchGroup {
+    return (node as WatchGroup).roots !== undefined && (node as WatchNode).isRoot === undefined;
+}
+
+/** Persisted shape of one watch expression. */
+interface PersistedExpression {
+    expression: string;
+    display?: DisplayOptions;
+}
+
+interface PersistedGroup {
+    id: string;
+    name: string;
+    expressions: PersistedExpression[];
+}
+
+/** Length of the rolling per-expression history used for sparklines. */
+const HISTORY_LEN = 32;
+
 const STORAGE_KEY = 'gdbLiveWatch.expressions';
+const GROUPS_KEY = 'gdbLiveWatch.groups';
+const DEFAULT_GROUP_NAME = 'Watch';
+
+/** Outcome of a {@link LiveWatchModel.refresh} pass. */
+export interface RefreshResult {
+    /** Number of root expressions that were evaluated. */
+    total: number;
+    /** How many of them evaluated without error. */
+    succeeded: number;
+}
 
 /**
  * Holds the watch expressions and refreshes their values through the
  * Debug Adapter Protocol ('evaluate' + 'variables' requests).
  */
 export class LiveWatchModel implements vscode.Disposable {
-    private roots: WatchNode[] = [];
+    private groups: WatchGroup[] = [];
+    private nextGroupId = 0;
     /** Node ids the user has expanded; their children are re-fetched on every refresh. */
     readonly expandedIds = new Set<string>();
 
@@ -32,37 +92,118 @@ export class LiveWatchModel implements vscode.Disposable {
     readonly onDidChange = this.changeEmitter.event;
 
     constructor(private readonly workspaceState: vscode.Memento) {
-        const saved = workspaceState.get<string[]>(STORAGE_KEY, []);
-        saved.forEach((expr, i) => this.roots.push(this.makeRoot(expr, i)));
+        const savedGroups = workspaceState.get<PersistedGroup[] | undefined>(GROUPS_KEY);
+        if (savedGroups && savedGroups.length) {
+            for (const g of savedGroups) {
+                const group = this.makeGroup(g.name, g.id);
+                g.expressions.forEach((e, i) =>
+                    group.roots.push(this.makeRoot(e.expression, group, i, e.display))
+                );
+                this.groups.push(group);
+            }
+        } else {
+            // Migrate the legacy flat expression list into a single default group.
+            const legacy = workspaceState.get<string[]>(STORAGE_KEY, []);
+            const group = this.makeGroup(DEFAULT_GROUP_NAME);
+            legacy.forEach((expr, i) => group.roots.push(this.makeRoot(expr, group, i)));
+            this.groups.push(group);
+        }
     }
 
-    private makeRoot(expression: string, index: number): WatchNode {
+    private makeGroup(name: string, id?: string): WatchGroup {
+        const gid = id ?? `grp${this.nextGroupId++}`;
+        // Keep the counter ahead of any restored ids.
+        const n = Number(/^grp(\d+)$/.exec(gid)?.[1]);
+        if (Number.isFinite(n) && n >= this.nextGroupId) {
+            this.nextGroupId = n + 1;
+        }
+        return { id: gid, name, roots: [] };
+    }
+
+    private makeRoot(
+        expression: string,
+        group: WatchGroup,
+        index: number,
+        display?: DisplayOptions
+    ): WatchNode {
         return {
-            id: `root#${index}`,
+            id: `${group.id}#${index}`,
             name: expression,
             expression,
             value: 'not available',
             variablesReference: 0,
             changed: false,
             error: false,
-            isRoot: true
+            isRoot: true,
+            group,
+            display
         };
     }
 
-    private persist(): void {
-        void this.workspaceState.update(STORAGE_KEY, this.roots.map((r) => r.expression));
+    private reindex(group: WatchGroup): void {
+        group.roots.forEach((r, i) => (r.id = `${group.id}#${i}`));
     }
 
+    private persist(): void {
+        const data: PersistedGroup[] = this.groups.map((g) => ({
+            id: g.id,
+            name: g.name,
+            expressions: g.roots.map((r) => ({ expression: r.expression, display: r.display }))
+        }));
+        void this.workspaceState.update(GROUPS_KEY, data);
+    }
+
+    get groupList(): readonly WatchGroup[] {
+        return this.groups;
+    }
+
+    /** All root expressions across every group (used by the poller). */
+    get allRoots(): WatchNode[] {
+        return this.groups.flatMap((g) => g.roots);
+    }
+
+    /** Backwards-compatible alias for the flat root list. */
     get expressions(): readonly WatchNode[] {
-        return this.roots;
+        return this.allRoots;
     }
 
     get isEmpty(): boolean {
-        return this.roots.length === 0;
+        return this.groups.every((g) => g.roots.length === 0);
     }
 
-    addExpression(expression: string): void {
-        this.roots.push(this.makeRoot(expression, this.roots.length));
+    private defaultGroup(): WatchGroup {
+        if (this.groups.length === 0) {
+            this.groups.push(this.makeGroup(DEFAULT_GROUP_NAME));
+        }
+        return this.groups[0];
+    }
+
+    addGroup(name: string): WatchGroup {
+        const group = this.makeGroup(name);
+        this.groups.push(group);
+        this.persist();
+        this.changeEmitter.fire();
+        return group;
+    }
+
+    renameGroup(group: WatchGroup, name: string): void {
+        group.name = name;
+        this.persist();
+        this.changeEmitter.fire();
+    }
+
+    removeGroup(group: WatchGroup): void {
+        const idx = this.groups.indexOf(group);
+        if (idx >= 0) {
+            this.groups.splice(idx, 1);
+            this.persist();
+            this.changeEmitter.fire();
+        }
+    }
+
+    addExpression(expression: string, group?: WatchGroup): void {
+        const target = group ?? this.defaultGroup();
+        target.roots.push(this.makeRoot(expression, target, target.roots.length));
         this.persist();
         this.changeEmitter.fire();
     }
@@ -71,27 +212,104 @@ export class LiveWatchModel implements vscode.Disposable {
         node.name = expression;
         node.expression = expression;
         node.value = 'not available';
+        node.rawValue = undefined;
         node.variablesReference = 0;
         node.changed = false;
         node.error = false;
         node.children = undefined;
+        node.history = undefined;
+        this.persist();
+        this.changeEmitter.fire();
+    }
+
+    setDisplayOptions(node: WatchNode, display: DisplayOptions | undefined): void {
+        if (!node.isRoot) {
+            return;
+        }
+        node.display = display;
+        if (node.rawValue !== undefined) {
+            node.value = this.applyDisplay(node, node.rawValue);
+        }
+        this.persist();
+        this.changeEmitter.fire();
+    }
+
+    moveExpressionToGroup(node: WatchNode, group: WatchGroup): void {
+        if (!node.isRoot || !node.group || node.group === group) {
+            return;
+        }
+        const from = node.group;
+        const idx = from.roots.indexOf(node);
+        if (idx >= 0) {
+            from.roots.splice(idx, 1);
+            this.reindex(from);
+        }
+        node.group = group;
+        group.roots.push(node);
+        this.reindex(group);
         this.persist();
         this.changeEmitter.fire();
     }
 
     removeExpression(node: WatchNode): void {
-        const idx = this.roots.indexOf(node);
+        const group = node.group;
+        if (!group) {
+            return;
+        }
+        const idx = group.roots.indexOf(node);
         if (idx >= 0) {
-            this.roots.splice(idx, 1);
+            group.roots.splice(idx, 1);
             // Reassign stable ids so expansion state doesn't bleed between entries.
-            this.roots.forEach((r, i) => (r.id = `root#${i}`));
+            this.reindex(group);
             this.persist();
             this.changeEmitter.fire();
         }
     }
 
     removeAll(): void {
-        this.roots = [];
+        for (const g of this.groups) {
+            g.roots = [];
+        }
+        this.persist();
+        this.changeEmitter.fire();
+    }
+
+    /** Serializes the current watch list (groups + expressions) for sharing. */
+    exportList(): string {
+        return JSON.stringify(
+            {
+                version: 1,
+                groups: this.groups.map((g) => ({
+                    name: g.name,
+                    expressions: g.roots.map((r) => ({ expression: r.expression, display: r.display }))
+                }))
+            },
+            undefined,
+            2
+        );
+    }
+
+    /** Replaces the watch list from a previously exported file. */
+    importList(json: string): void {
+        const parsed = JSON.parse(json);
+        if (!Array.isArray(parsed?.groups)) {
+            throw new Error('not a valid watch list file');
+        }
+        this.groups = [];
+        for (const g of parsed.groups) {
+            const group = this.makeGroup(typeof g?.name === 'string' ? g.name : DEFAULT_GROUP_NAME);
+            for (const e of g?.expressions ?? []) {
+                if (typeof e?.expression === 'string' && e.expression.trim()) {
+                    group.roots.push(
+                        this.makeRoot(e.expression.trim(), group, group.roots.length, e.display)
+                    );
+                }
+            }
+            this.groups.push(group);
+        }
+        if (this.groups.length === 0) {
+            this.groups.push(this.makeGroup(DEFAULT_GROUP_NAME));
+        }
         this.persist();
         this.changeEmitter.fire();
     }
@@ -100,12 +318,13 @@ export class LiveWatchModel implements vscode.Disposable {
     invalidate(): void {
         const visit = (node: WatchNode) => {
             node.value = 'not available';
+            node.rawValue = undefined;
             node.variablesReference = 0;
             node.changed = false;
             node.error = false;
             node.children = undefined;
         };
-        this.roots.forEach(visit);
+        this.allRoots.forEach(visit);
         this.changeEmitter.fire();
     }
 
@@ -113,6 +332,45 @@ export class LiveWatchModel implements vscode.Disposable {
         return vscode.workspace.getConfiguration('gdbLiveWatch').get<boolean>('hexFormat', false)
             ? { hex: true }
             : undefined;
+    }
+
+    private globalHex(): boolean {
+        return vscode.workspace.getConfiguration('gdbLiveWatch').get<boolean>('hexFormat', false);
+    }
+
+    /**
+     * Applies a root's per-expression display options (and the global hex
+     * toggle as a default) to a raw GDB value. Only pure numeric values are
+     * reformatted; structs/strings/pointers-with-symbols are left untouched.
+     */
+    private applyDisplay(node: WatchNode, raw: string): string {
+        const d = node.display;
+        const unit = d?.unit ? ` ${d.unit}` : '';
+        const num = simpleNumeric(raw);
+        if (num === null) {
+            return raw;
+        }
+
+        if (d && (typeof d.scale === 'number' || typeof d.offset === 'number')) {
+            const scaled = num * (d.scale ?? 1) + (d.offset ?? 0);
+            return `${formatScaled(scaled)}${unit}`;
+        }
+
+        const format: ValueFormat = d?.format ?? (this.globalHex() ? 'hex' : 'natural');
+        if (format === 'natural') {
+            return `${raw}${unit}`;
+        }
+        if (format === 'dec') {
+            return `${num}${unit}`;
+        }
+        if (!Number.isInteger(num)) {
+            // Non-decimal bases only make sense for integers.
+            return `${num}${unit}`;
+        }
+        const base = format === 'hex' ? 16 : format === 'oct' ? 8 : 2;
+        const prefix = format === 'hex' ? '0x' : format === 'oct' ? '0o' : '0b';
+        const sign = num < 0 ? '-' : '';
+        return `${sign}${prefix}${Math.abs(num).toString(base)}${unit}`;
     }
 
     private maxChildren(): number {
@@ -123,29 +381,34 @@ export class LiveWatchModel implements vscode.Disposable {
      * Re-evaluates all root expressions (and children of expanded nodes).
      * @param frameId top stack frame when the target is stopped; undefined while running
      *                (global/static expressions only in that case).
-     * @returns true if at least one expression evaluated successfully.
+     * @returns how many root expressions were evaluated and how many succeeded.
      */
-    async refresh(session: vscode.DebugSession, frameId: number | undefined): Promise<boolean> {
-        const format = this.valueFormat();
-        let anySuccess = false;
+    async refresh(session: vscode.DebugSession, frameId: number | undefined): Promise<RefreshResult> {
+        const roots = this.allRoots;
+        let succeeded = 0;
 
-        for (const root of this.roots) {
+        for (const root of roots) {
             const oldValue = root.error ? undefined : root.value;
             try {
+                // Roots are evaluated naturally and formatted locally so the
+                // per-expression format (hex/bin/scale/unit) can be applied.
                 const resp = await session.customRequest('evaluate', {
                     expression: root.expression,
                     frameId,
-                    context: 'watch',
-                    format
+                    context: 'watch'
                 });
-                root.value = String(resp.result ?? '');
+                const raw = String(resp.result ?? '');
+                root.rawValue = raw;
+                root.value = this.applyDisplay(root, raw);
                 root.type = resp.type;
                 root.variablesReference = resp.variablesReference ?? 0;
                 root.changed = oldValue !== undefined && oldValue !== root.value;
                 root.error = false;
-                anySuccess = true;
+                this.pushHistory(root, raw);
+                succeeded++;
             } catch (e: any) {
                 root.value = shortError(e);
+                root.rawValue = undefined;
                 root.type = undefined;
                 root.variablesReference = 0;
                 root.changed = false;
@@ -154,13 +417,27 @@ export class LiveWatchModel implements vscode.Disposable {
             }
         }
 
-        if (anySuccess) {
-            for (const root of this.roots) {
+        if (succeeded > 0) {
+            for (const root of roots) {
                 await this.refreshExpanded(session, root);
             }
         }
         this.changeEmitter.fire();
-        return anySuccess;
+        return { total: roots.length, succeeded };
+    }
+
+    private pushHistory(node: WatchNode, raw: string): void {
+        const num = simpleNumeric(raw);
+        if (num === null) {
+            return;
+        }
+        if (!node.history) {
+            node.history = [];
+        }
+        node.history.push(num);
+        if (node.history.length > HISTORY_LEN) {
+            node.history.shift();
+        }
     }
 
     private async refreshExpanded(session: vscode.DebugSession, node: WatchNode): Promise<void> {
@@ -190,7 +467,7 @@ export class LiveWatchModel implements vscode.Disposable {
             }
             return undefined;
         };
-        for (const root of this.roots) {
+        for (const root of this.allRoots) {
             const found = visit(root);
             if (found) {
                 return found;
@@ -303,4 +580,39 @@ function shortError(e: any): string {
     const msg = String(e?.message ?? e ?? 'evaluation failed');
     // GDB/MI errors can be long and multi-line; keep the first line.
     return msg.split('\n')[0].trim();
+}
+
+/**
+ * Parses a value string that is *entirely* a single number (decimal, hex,
+ * float, or boolean). Returns null for anything else (structs, pointers with
+ * symbol suffixes, chars, strings) so those values are shown verbatim.
+ */
+function simpleNumeric(raw: string): number | null {
+    const s = raw.trim();
+    if (!s) {
+        return null;
+    }
+    if (/^true$/i.test(s)) {
+        return 1;
+    }
+    if (/^false$/i.test(s)) {
+        return 0;
+    }
+    if (/^-?0x[0-9a-fA-F]+$/.test(s)) {
+        return s.startsWith('-') ? -parseInt(s.slice(1), 16) : parseInt(s, 16);
+    }
+    if (/^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(s)) {
+        return Number(s);
+    }
+    return null;
+}
+
+function formatScaled(x: number): string {
+    if (!isFinite(x)) {
+        return String(x);
+    }
+    if (Number.isInteger(x) && Math.abs(x) < 1e15) {
+        return String(x);
+    }
+    return String(parseFloat(x.toPrecision(9)));
 }

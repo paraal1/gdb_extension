@@ -88,6 +88,75 @@ body {
     font-weight: bold;
 }
 
+/* ---- trigger bar ---- */
+
+#triggerBar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--vscode-panel-border, #444);
+    flex: none;
+    flex-wrap: wrap;
+    font-size: 0.95em;
+}
+
+#triggerBar.disabled label:not(.trigToggle),
+#triggerBar.disabled select,
+#triggerBar.disabled input:not(#trigEnabled) {
+    opacity: 0.45;
+}
+
+#triggerBar label {
+    opacity: 0.85;
+}
+
+#triggerBar select,
+#triggerBar input {
+    background: var(--vscode-dropdown-background, var(--vscode-input-background));
+    color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+    border: 1px solid var(--vscode-dropdown-border, transparent);
+    padding: 2px 4px;
+    font-family: inherit;
+    font-size: inherit;
+}
+
+#triggerBar input#trigLevel {
+    width: 70px;
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+#triggerBar input#trigPre {
+    width: 52px;
+}
+
+#triggerBar input#trigWindow {
+    width: 72px;
+}
+
+#triggerBar .trigToggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: bold;
+    opacity: 1;
+}
+
+#trigStatus {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    font-weight: bold;
+}
+
+#trigStatus.armed {
+    color: var(--vscode-charts-yellow, #e2c08d);
+}
+
+#trigStatus.triggered {
+    color: var(--vscode-charts-green, #89d185);
+}
+
 /* ---- chart ---- */
 
 #chartArea {
@@ -111,6 +180,60 @@ body {
     font-size: 0.85em;
     opacity: 0.45;
     pointer-events: none;
+}
+
+#toolbar button.active {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+
+#readout {
+    position: absolute;
+    left: 8px;
+    top: 4px;
+    max-width: 60%;
+    padding: 6px 8px;
+    background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.9));
+    color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+    border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, #444));
+    border-radius: 3px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 0.85em;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 2;
+}
+
+#readout.hidden {
+    display: none;
+}
+
+#readout table {
+    border-collapse: collapse;
+}
+
+#readout th, #readout td {
+    padding: 1px 6px;
+    text-align: right;
+}
+
+#readout th:first-child, #readout td:first-child {
+    text-align: left;
+}
+
+#readout .hdr {
+    opacity: 0.7;
+    font-weight: normal;
+}
+
+#readout .swatch {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    margin-right: 4px;
+    vertical-align: middle;
 }
 
 /* ---- bottom: variables + data table ---- */

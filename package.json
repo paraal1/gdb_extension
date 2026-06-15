@@ -86,6 +86,17 @@
         "category": "GDB Live Watch"
       },
       {
+        "command": "gdbLiveWatch.copyValueWithTimestamp",
+        "title": "Copy Value with Timestamp",
+        "category": "GDB Live Watch"
+      },
+      {
+        "command": "gdbLiveWatch.copyAsTable",
+        "title": "Copy All as Table",
+        "category": "GDB Live Watch",
+        "icon": "$(table)"
+      },
+      {
         "command": "gdbLiveWatch.refresh",
         "title": "Refresh Now",
         "category": "GDB Live Watch",
@@ -112,6 +123,62 @@
       {
         "command": "gdbLiveWatch.toggleHexFormat",
         "title": "Toggle Hex Display",
+        "category": "GDB Live Watch"
+      },
+      {
+        "command": "gdbLiveWatch.addGroup",
+        "title": "Add Group",
+        "category": "GDB Live Watch",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "gdbLiveWatch.addExpressionToGroup",
+        "title": "Add Expression to Group",
+        "category": "GDB Live Watch",
+        "icon": "$(add)"
+      },
+      {
+        "command": "gdbLiveWatch.renameGroup",
+        "title": "Rename Group",
+        "category": "GDB Live Watch",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "gdbLiveWatch.removeGroup",
+        "title": "Remove Group",
+        "category": "GDB Live Watch",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "gdbLiveWatch.moveToGroup",
+        "title": "Move to Group...",
+        "category": "GDB Live Watch"
+      },
+      {
+        "command": "gdbLiveWatch.saveWatchList",
+        "title": "Save Watch List...",
+        "category": "GDB Live Watch",
+        "icon": "$(save)"
+      },
+      {
+        "command": "gdbLiveWatch.loadWatchList",
+        "title": "Load Watch List...",
+        "category": "GDB Live Watch",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "gdbLiveWatch.setFormat",
+        "title": "Set Display Format...",
+        "category": "GDB Live Watch"
+      },
+      {
+        "command": "gdbLiveWatch.setScaleUnit",
+        "title": "Set Scale / Unit...",
+        "category": "GDB Live Watch"
+      },
+      {
+        "command": "gdbLiveWatch.clearFormat",
+        "title": "Clear Display Format",
         "category": "GDB Live Watch"
       },
       {
@@ -150,6 +217,18 @@
         "category": "GDB Symbols"
       },
       {
+        "command": "gdbSymbols.toggleFavorite",
+        "title": "Toggle Favorite",
+        "category": "GDB Symbols",
+        "icon": "$(star)"
+      },
+      {
+        "command": "gdbSymbols.filterHistory",
+        "title": "Recent Filters...",
+        "category": "GDB Symbols",
+        "icon": "$(history)"
+      },
+      {
         "command": "gdbDaq.open",
         "title": "Open DAQ Chart",
         "category": "GDB DAQ",
@@ -172,6 +251,11 @@
       "view/title": [
         {
           "command": "gdbLiveWatch.addExpression",
+          "when": "view == gdbLiveWatch",
+          "group": "navigation@1"
+        },
+        {
+          "command": "gdbLiveWatch.addGroup",
           "when": "view == gdbLiveWatch",
           "group": "navigation@1"
         },
@@ -211,6 +295,21 @@
           "group": "settings@2"
         },
         {
+          "command": "gdbLiveWatch.saveWatchList",
+          "when": "view == gdbLiveWatch",
+          "group": "settings@3"
+        },
+        {
+          "command": "gdbLiveWatch.loadWatchList",
+          "when": "view == gdbLiveWatch",
+          "group": "settings@4"
+        },
+        {
+          "command": "gdbLiveWatch.copyAsTable",
+          "when": "view == gdbLiveWatch",
+          "group": "settings@5"
+        },
+        {
           "command": "gdbSymbols.search",
           "when": "view == gdbSymbols",
           "group": "navigation@1"
@@ -221,12 +320,47 @@
           "group": "navigation@2"
         },
         {
-          "command": "gdbSymbols.load",
+          "command": "gdbSymbols.filterHistory",
           "when": "view == gdbSymbols",
           "group": "navigation@3"
+        },
+        {
+          "command": "gdbSymbols.load",
+          "when": "view == gdbSymbols",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
+        {
+          "command": "gdbLiveWatch.addExpressionToGroup",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.group",
+          "group": "inline@1"
+        },
+        {
+          "command": "gdbLiveWatch.renameGroup",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.group",
+          "group": "inline@2"
+        },
+        {
+          "command": "gdbLiveWatch.removeGroup",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.group",
+          "group": "inline@3"
+        },
+        {
+          "command": "gdbLiveWatch.addExpressionToGroup",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.group",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "gdbLiveWatch.renameGroup",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.group",
+          "group": "1_modify@2"
+        },
+        {
+          "command": "gdbLiveWatch.removeGroup",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.group",
+          "group": "1_modify@3"
+        },
         {
           "command": "gdbLiveWatch.editExpression",
           "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.expression",
@@ -258,6 +392,26 @@
           "group": "1_modify@2"
         },
         {
+          "command": "gdbLiveWatch.moveToGroup",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.expression",
+          "group": "1_modify@3"
+        },
+        {
+          "command": "gdbLiveWatch.setFormat",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.expression",
+          "group": "3_format@1"
+        },
+        {
+          "command": "gdbLiveWatch.setScaleUnit",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.expression",
+          "group": "3_format@2"
+        },
+        {
+          "command": "gdbLiveWatch.clearFormat",
+          "when": "view == gdbLiveWatch && viewItem == gdbLiveWatch.expression",
+          "group": "3_format@3"
+        },
+        {
           "command": "gdbLiveWatch.copyValue",
           "when": "view == gdbLiveWatch",
           "group": "2_copy@1"
@@ -266,6 +420,11 @@
           "command": "gdbLiveWatch.copyExpression",
           "when": "view == gdbLiveWatch",
           "group": "2_copy@2"
+        },
+        {
+          "command": "gdbLiveWatch.copyValueWithTimestamp",
+          "when": "view == gdbLiveWatch && viewItem =~ /gdbLiveWatch\\.(expression|variable)/",
+          "group": "2_copy@3"
         },
         {
           "command": "gdbDaq.addFromWatch",
@@ -283,9 +442,14 @@
           "group": "inline@1"
         },
         {
-          "command": "gdbSymbols.goTo",
-          "when": "view == gdbSymbols && viewItem == gdbSymbols.symbolWithLocation",
+          "command": "gdbSymbols.toggleFavorite",
+          "when": "view == gdbSymbols && viewItem =~ /gdbSymbols\\.symbol/",
           "group": "inline@2"
+        },
+        {
+          "command": "gdbSymbols.goTo",
+          "when": "view == gdbSymbols && viewItem =~ /gdbSymbols\\.symbol.*loc/",
+          "group": "inline@3"
         },
         {
           "command": "gdbSymbols.addToLiveWatch",
@@ -294,8 +458,13 @@
         },
         {
           "command": "gdbSymbols.goTo",
-          "when": "view == gdbSymbols && viewItem == gdbSymbols.symbolWithLocation",
+          "when": "view == gdbSymbols && viewItem =~ /gdbSymbols\\.symbol.*loc/",
           "group": "1_actions@2"
+        },
+        {
+          "command": "gdbSymbols.toggleFavorite",
+          "when": "view == gdbSymbols && viewItem =~ /gdbSymbols\\.symbol/",
+          "group": "1_actions@4"
         },
         {
           "command": "gdbSymbols.copyName",
@@ -332,6 +501,38 @@
           "when": "false"
         },
         {
+          "command": "gdbLiveWatch.addExpressionToGroup",
+          "when": "false"
+        },
+        {
+          "command": "gdbLiveWatch.renameGroup",
+          "when": "false"
+        },
+        {
+          "command": "gdbLiveWatch.removeGroup",
+          "when": "false"
+        },
+        {
+          "command": "gdbLiveWatch.moveToGroup",
+          "when": "false"
+        },
+        {
+          "command": "gdbLiveWatch.setFormat",
+          "when": "false"
+        },
+        {
+          "command": "gdbLiveWatch.setScaleUnit",
+          "when": "false"
+        },
+        {
+          "command": "gdbLiveWatch.clearFormat",
+          "when": "false"
+        },
+        {
+          "command": "gdbLiveWatch.copyValueWithTimestamp",
+          "when": "false"
+        },
+        {
           "command": "gdbSymbols.addToLiveWatch",
           "when": "false"
         },
@@ -341,6 +542,10 @@
         },
         {
           "command": "gdbSymbols.copyName",
+          "when": "false"
+        },
+        {
+          "command": "gdbSymbols.toggleFavorite",
           "when": "false"
         },
         {
@@ -382,6 +587,11 @@
           "default": true,
           "description": "Automatically start live polling when a debug session starts."
         },
+        "gdbLiveWatch.adaptivePolling": {
+          "type": "boolean",
+          "default": true,
+          "description": "When sampling (pause/read/continue) is in use, automatically stretch the polling interval so the target is paused for at most ~20% of the time, avoiding choking timing-sensitive models."
+        },
         "gdbLiveWatch.maxChildren": {
           "type": "number",
           "default": 100,
@@ -391,7 +601,12 @@
         "gdbLiveWatch.hexFormat": {
           "type": "boolean",
           "default": false,
-          "description": "Display values in hexadecimal format."
+          "description": "Display values in hexadecimal format (default for expressions without a per-expression format)."
+        },
+        "gdbLiveWatch.sparklines": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a compact inline trend sparkline next to each watched value."
         },
         "gdbSymbols.autoLoad": {
           "type": "boolean",
@@ -419,6 +634,18 @@
           "default": 100000,
           "minimum": 1000,
           "description": "Maximum number of acquired samples kept in the DAQ buffer per variable. Once full, the oldest samples are discarded (ring buffer)."
+        },
+        "gdbDaq.lineWidth": {
+          "type": "number",
+          "default": 1.25,
+          "minimum": 0.5,
+          "maximum": 6,
+          "description": "Line width (in pixels) used to draw the DAQ chart traces."
+        },
+        "gdbDaq.showMarkers": {
+          "type": "boolean",
+          "default": true,
+          "description": "Draw a dot at each acquired sample on the DAQ chart when the data is sparse enough."
         }
       }
     }

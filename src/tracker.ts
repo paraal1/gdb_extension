@@ -24,6 +24,10 @@ export interface OutputCapture {
 /** Stop reasons that mean "something real happened" - never auto-continue past these. */
 const REAL_STOP_REASONS = ['breakpoint', 'exception', 'step', 'entry', 'assert', 'watchpoint'];
 
+function isRealStopReason(reason: string): boolean {
+    return REAL_STOP_REASONS.some((r) => reason.includes(r));
+}
+
 const RESUME_REQUESTS = new Set([
     'continue', 'next', 'stepIn', 'stepOut', 'stepBack', 'reverseContinue', 'goto', 'restart'
 ]);
@@ -80,13 +84,17 @@ export class DebugSessionTracker implements vscode.Disposable {
                     info.outputCaptures.forEach((c) => c.chunks.push(msg.body.output));
                 } else if (msg.event === 'stopped') {
                     info.state = 'stopped';
-                    if (typeof msg.body?.threadId === 'number') {
-                        info.threadId = msg.body.threadId;
+                    const stopReason = String(msg.body?.reason ?? '').toLowerCase();
+                    const stoppedThreadId =
+                        typeof msg.body?.threadId === 'number' ? (msg.body.threadId as number) : undefined;
+                    // Keep a stable preferred thread: avoid replacing it with short-lived
+                    // signal/trap helper threads while the target is running.
+                    if (stoppedThreadId !== undefined && (info.threadId === undefined || isRealStopReason(stopReason))) {
+                        info.threadId = stoppedThreadId;
                     }
                     if (info.expectingPause) {
                         info.expectingPause = false;
-                        const reason = String(msg.body?.reason ?? '').toLowerCase();
-                        info.autoContinueOk = !REAL_STOP_REASONS.some((r) => reason.includes(r));
+                        info.autoContinueOk = !isRealStopReason(stopReason);
                     } else {
                         info.autoContinueOk = false;
                     }
@@ -112,6 +120,11 @@ export class DebugSessionTracker implements vscode.Disposable {
 
     getThreadId(sessionId: string): number | undefined {
         return this.sessions.get(sessionId)?.threadId;
+    }
+
+    /** Updates the preferred live thread for subsequent stack/evaluate requests. */
+    rememberThreadId(sessionId: string, threadId: number): void {
+        this.info(sessionId).threadId = threadId;
     }
 
     /** Arm the "next pause stop is ours" flag before sending a sampling pause. */
@@ -155,26 +168,47 @@ export class DebugSessionTracker implements vscode.Disposable {
         };
     }
 
-    /** Resolves true when the session reports a 'stopped' event, false on timeout/termination. */
-    waitForStop(sessionId: string, timeoutMs: number): Promise<boolean> {
+    /**
+     * Waits for the session to report a 'stopped' event.
+     *
+     * Returns a handle whose `promise` resolves to true on a stop, or false on
+     * timeout/termination. Call `cancel()` to abandon the wait early (e.g. when
+     * the triggering 'pause' request failed); this removes the registered waiter
+     * and clears its timer so nothing lingers.
+     */
+    waitForStop(sessionId: string, timeoutMs: number): { promise: Promise<boolean>; cancel: () => void } {
         const info = this.info(sessionId);
         if (info.state === 'stopped') {
-            return Promise.resolve(true);
+            return { promise: Promise.resolve(true), cancel: () => {} };
         }
-        return new Promise<boolean>((resolve) => {
-            const timer = setTimeout(() => {
-                const idx = info.stopWaiters.indexOf(waiter);
-                if (idx >= 0) {
-                    info.stopWaiters.splice(idx, 1);
-                }
-                resolve(false);
-            }, timeoutMs);
+
+        let settle!: (stopped: boolean) => void;
+        let timer: ReturnType<typeof setTimeout>;
+        const remove = (waiter: (stopped: boolean) => void) => {
+            const idx = info.stopWaiters.indexOf(waiter);
+            if (idx >= 0) {
+                info.stopWaiters.splice(idx, 1);
+            }
+        };
+
+        const promise = new Promise<boolean>((resolve) => {
             const waiter = (stopped: boolean) => {
                 clearTimeout(timer);
                 resolve(stopped);
             };
+            settle = (stopped: boolean) => {
+                clearTimeout(timer);
+                remove(waiter);
+                resolve(stopped);
+            };
+            timer = setTimeout(() => {
+                remove(waiter);
+                resolve(false);
+            }, timeoutMs);
             info.stopWaiters.push(waiter);
         });
+
+        return { promise, cancel: () => settle(false) };
     }
 
     dispose(): void {

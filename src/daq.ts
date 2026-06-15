@@ -21,6 +21,29 @@ export interface DaqBatch {
     series: Record<string, (number | null)[]>;
 }
 
+export type TriggerEdge = 'rising' | 'falling' | 'both';
+export type TriggerMode = 'single' | 'normal' | 'auto';
+
+/**
+ * Scope-style trigger configuration. When enabled, acquisition keeps a rolling
+ * pre-trigger buffer and only "commits" a capture window once the source
+ * variable crosses {@link level} in the configured {@link edge} direction.
+ */
+export interface DaqTrigger {
+    enabled: boolean;
+    /** Variable id whose value is tested against the level. */
+    sourceId: string;
+    edge: TriggerEdge;
+    level: number;
+    mode: TriggerMode;
+    /** Fraction (0..1) of the capture window kept *before* the trigger. */
+    preTriggerFraction: number;
+    /** Total samples per capture window (pre + post). */
+    windowSamples: number;
+}
+
+export type TriggerState = 'idle' | 'armed' | 'triggered';
+
 export interface DaqSnapshot {
     recording: boolean;
     periodMs: number;
@@ -28,12 +51,26 @@ export interface DaqSnapshot {
     variables: DaqVariable[];
     t: number[];
     series: Record<string, (number | null)[]>;
+    trigger: DaqTrigger;
+    triggerState: TriggerState;
+    triggerTime: number | null;
 }
 
 interface PersistedConfig {
     periodMs: number;
     variables: Array<{ expression: string; enabled: boolean; color: string }>;
+    trigger?: DaqTrigger;
 }
+
+const DEFAULT_TRIGGER: DaqTrigger = {
+    enabled: false,
+    sourceId: '',
+    edge: 'rising',
+    level: 0,
+    mode: 'normal',
+    preTriggerFraction: 0.25,
+    windowSamples: 2000
+};
 
 const STORAGE_KEY = 'gdbDaq.config';
 
@@ -64,6 +101,13 @@ export class DaqEngine implements vscode.Disposable {
     private periodMs = 100;
     private nextId = 1;
 
+    private trigger: DaqTrigger = { ...DEFAULT_TRIGGER };
+    private triggerState: TriggerState = 'idle';
+    private triggerTime: number | null = null;
+    private prevTriggerSource: number | null = null;
+    private postTriggerRemaining = 0;
+    private armedSamples = 0;
+
     private pendingT: number[] = [];
     private pendingSeries = new Map<string, (number | null)[]>();
     private flushTimer?: ReturnType<typeof setInterval>;
@@ -90,6 +134,9 @@ export class DaqEngine implements vscode.Disposable {
             for (const v of saved.variables ?? []) {
                 this.addVariableInternal(v.expression, v.enabled, v.color);
             }
+            if (saved.trigger) {
+                this.trigger = { ...DEFAULT_TRIGGER, ...saved.trigger };
+            }
         }
     }
 
@@ -111,6 +158,35 @@ export class DaqEngine implements vscode.Disposable {
 
     get variables(): readonly DaqVariable[] {
         return this.vars;
+    }
+
+    get triggerConfig(): DaqTrigger {
+        return this.trigger;
+    }
+
+    /** Updates the trigger configuration. Re-arms if recording is in progress. */
+    setTrigger(trigger: Partial<DaqTrigger>): void {
+        this.trigger = { ...this.trigger, ...trigger };
+        this.trigger.windowSamples = Math.max(2, Math.floor(this.trigger.windowSamples) || 2);
+        this.trigger.preTriggerFraction = Math.min(0.95, Math.max(0, this.trigger.preTriggerFraction));
+        if (this.recording) {
+            // Re-arm so the new condition takes effect on the running capture.
+            this.armTrigger();
+        }
+        this.persist();
+        this.configEmitter.fire();
+    }
+
+    private armTrigger(): void {
+        this.triggerState = this.trigger.enabled ? 'armed' : 'idle';
+        this.triggerTime = null;
+        this.prevTriggerSource = null;
+        this.postTriggerRemaining = 0;
+        this.armedSamples = 0;
+    }
+
+    private preTriggerSamples(): number {
+        return Math.max(0, Math.floor(this.trigger.windowSamples * this.trigger.preTriggerFraction));
     }
 
     addVariable(expression: string): DaqVariable | undefined {
@@ -145,6 +221,9 @@ export class DaqEngine implements vscode.Disposable {
             this.vars.splice(idx, 1);
             this.data.delete(id);
             this.pendingSeries.delete(id);
+            if (this.trigger.sourceId === id) {
+                this.trigger = { ...this.trigger, sourceId: '' };
+            }
             this.persist();
             this.configEmitter.fire();
         }
@@ -171,7 +250,8 @@ export class DaqEngine implements vscode.Disposable {
                 expression: v.expression,
                 enabled: v.enabled,
                 color: v.color
-            }))
+            })),
+            trigger: this.trigger
         };
         void this.workspaceState.update(STORAGE_KEY, cfg);
     }
@@ -192,7 +272,8 @@ export class DaqEngine implements vscode.Disposable {
                     expression: v.expression,
                     enabled: v.enabled,
                     color: v.color
-                }))
+                })),
+                trigger: this.trigger
             },
             undefined,
             2
@@ -207,6 +288,7 @@ export class DaqEngine implements vscode.Disposable {
         this.stop();
         this.vars = [];
         this.data.clear();
+        this.nextId = 1;
         this.clearData();
         this.periodMs = typeof parsed.samplingPeriodMs === 'number' ? parsed.samplingPeriodMs : 100;
         for (const v of parsed.variables) {
@@ -218,6 +300,12 @@ export class DaqEngine implements vscode.Disposable {
                 );
             }
         }
+        // Variable ids are assigned deterministically (v1, v2, ...) in the same
+        // order on every load, so a stored trigger sourceId stays valid.
+        this.trigger = parsed.trigger
+            ? { ...DEFAULT_TRIGGER, ...parsed.trigger }
+            : { ...DEFAULT_TRIGGER };
+        this.armTrigger();
         this.persist();
         this.configEmitter.fire();
     }
@@ -235,7 +323,10 @@ export class DaqEngine implements vscode.Disposable {
             maxSamples: this.maxSamples(),
             variables: this.vars,
             t: this.times,
-            series
+            series,
+            trigger: this.trigger,
+            triggerState: this.triggerState,
+            triggerTime: this.triggerTime
         };
     }
 
@@ -273,6 +364,7 @@ export class DaqEngine implements vscode.Disposable {
         }
         this.clearData();
         this.recording = true;
+        this.armTrigger();
         this.flushTimer = setInterval(() => this.flush(), FLUSH_MS);
         void this.acquisitionLoop(session);
         this.configEmitter.fire();
@@ -283,6 +375,7 @@ export class DaqEngine implements vscode.Disposable {
             return;
         }
         this.recording = false;
+        this.triggerState = 'idle';
         if (this.flushTimer) {
             clearInterval(this.flushTimer);
             this.flushTimer = undefined;
@@ -375,9 +468,84 @@ export class DaqEngine implements vscode.Disposable {
             pending.push(value);
         }
 
-        // Ring-buffer behaviour: drop the oldest samples beyond the cap. The
-        // webview applies the same cap, so both sides stay aligned.
-        const max = this.maxSamples();
+        this.applyCapAndTrigger(t, byId.get(this.trigger.sourceId) ?? null);
+    }
+
+    /**
+     * Applies the ring-buffer cap and, when a trigger is configured, runs the
+     * scope-style state machine (armed -> triggered -> capture complete).
+     */
+    private applyCapAndTrigger(t: number, source: number | null): void {
+        if (!this.trigger.enabled) {
+            this.capTo(this.maxSamples());
+            return;
+        }
+
+        const pre = this.preTriggerSamples();
+
+        if (this.triggerState === 'armed') {
+            this.armedSamples++;
+            const fired = this.crossedLevel(this.prevTriggerSource, source);
+            // 'auto' mode self-triggers once a full window has elapsed with no event.
+            const autoFire = this.trigger.mode === 'auto' && this.armedSamples >= this.trigger.windowSamples;
+            if (source !== null) {
+                this.prevTriggerSource = source;
+            }
+            if (fired || autoFire) {
+                this.triggerState = 'triggered';
+                this.triggerTime = t;
+                this.postTriggerRemaining = this.trigger.windowSamples - pre;
+                this.capTo(this.trigger.windowSamples);
+                this.configEmitter.fire();
+            } else {
+                // Keep only the rolling pre-trigger buffer while waiting.
+                this.capTo(Math.max(1, pre));
+            }
+            return;
+        }
+
+        if (this.triggerState === 'triggered') {
+            this.capTo(this.trigger.windowSamples);
+            if (this.postTriggerRemaining > 0) {
+                this.postTriggerRemaining--;
+            }
+            if (this.postTriggerRemaining <= 0) {
+                if (this.trigger.mode === 'single') {
+                    this.stop();
+                } else {
+                    // normal / auto: re-arm for the next capture.
+                    this.clearData();
+                    this.triggerState = 'armed';
+                    this.triggerTime = null;
+                    this.prevTriggerSource = null;
+                    this.armedSamples = 0;
+                    this.configEmitter.fire();
+                }
+            }
+            return;
+        }
+
+        this.capTo(this.maxSamples());
+    }
+
+    private crossedLevel(prev: number | null, cur: number | null): boolean {
+        if (prev === null || cur === null) {
+            return false;
+        }
+        const level = this.trigger.level;
+        const rising = prev < level && cur >= level;
+        const falling = prev > level && cur <= level;
+        if (this.trigger.edge === 'rising') {
+            return rising;
+        }
+        if (this.trigger.edge === 'falling') {
+            return falling;
+        }
+        return rising || falling;
+    }
+
+    /** Ring-buffer behaviour: drop oldest samples beyond `max`. */
+    private capTo(max: number): void {
         if (this.times.length > max) {
             const drop = this.times.length - max;
             this.times.splice(0, drop);

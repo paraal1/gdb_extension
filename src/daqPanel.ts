@@ -20,8 +20,22 @@ export class DaqPanelManager implements vscode.Disposable {
             }),
             engine.onDidClearData(() => {
                 void this.panel?.webview.postMessage({ type: 'clear' });
+            }),
+            vscode.workspace.onDidChangeConfiguration((e) => {
+                if (e.affectsConfiguration('gdbDaq.lineWidth') || e.affectsConfiguration('gdbDaq.showMarkers')) {
+                    void this.panel?.webview.postMessage({ type: 'style', ...this.chartStyle() });
+                }
             })
         );
+    }
+
+    /** Chart appearance options sourced from settings. */
+    private chartStyle(): { lineWidth: number; showMarkers: boolean } {
+        const cfg = vscode.workspace.getConfiguration('gdbDaq');
+        return {
+            lineWidth: cfg.get<number>('lineWidth', 1.25),
+            showMarkers: cfg.get<boolean>('showMarkers', true)
+        };
     }
 
     show(): void {
@@ -67,6 +81,11 @@ export class DaqPanelManager implements vscode.Disposable {
             case 'setPeriod':
                 this.engine.setSamplingPeriod(Number(msg.ms) || 0);
                 break;
+            case 'setTrigger':
+                if (msg.trigger && typeof msg.trigger === 'object') {
+                    this.engine.setTrigger(msg.trigger);
+                }
+                break;
             case 'addVariable':
                 if (typeof msg.expression === 'string') {
                     this.engine.addVariable(msg.expression);
@@ -83,6 +102,9 @@ export class DaqPanelManager implements vscode.Disposable {
                 break;
             case 'export':
                 await this.exportData();
+                break;
+            case 'copyTable':
+                await this.copyTable();
                 break;
             case 'saveConfig':
                 await this.saveConfig();
@@ -103,7 +125,11 @@ export class DaqPanelManager implements vscode.Disposable {
             recording: snap.recording,
             periodMs: snap.periodMs,
             maxSamples: snap.maxSamples,
-            variables: snap.variables
+            variables: snap.variables,
+            trigger: snap.trigger,
+            triggerState: snap.triggerState,
+            triggerTime: snap.triggerTime,
+            ...this.chartStyle()
         });
     }
 
@@ -111,7 +137,11 @@ export class DaqPanelManager implements vscode.Disposable {
         if (!this.panel) {
             return;
         }
-        void this.panel.webview.postMessage({ type: 'snapshot', ...this.engine.snapshot() });
+        void this.panel.webview.postMessage({
+            type: 'snapshot',
+            ...this.engine.snapshot(),
+            ...this.chartStyle()
+        });
     }
 
     // ---- export -------------------------------------------------------------
@@ -150,6 +180,28 @@ export class DaqPanelManager implements vscode.Disposable {
         void vscode.window.showInformationMessage(
             `DAQ: exported ${snap.t.length} samples to ${uri.fsPath}`
         );
+    }
+
+    /** Copies all acquired samples to the clipboard as a tab-separated table. */
+    private async copyTable(): Promise<void> {
+        const snap = this.engine.snapshot();
+        if (snap.t.length === 0) {
+            void vscode.window.showWarningMessage('DAQ: no acquired data to copy.');
+            return;
+        }
+        const vars = snap.variables;
+        const lines: string[] = [];
+        lines.push(['time [s]', ...vars.map((v) => v.expression)].join('\t'));
+        for (let i = 0; i < snap.t.length; i++) {
+            const row = [snap.t[i].toFixed(6)];
+            for (const v of vars) {
+                const value = snap.series[v.id]?.[i];
+                row.push(value === null || value === undefined ? '' : String(value));
+            }
+            lines.push(row.join('\t'));
+        }
+        await vscode.env.clipboard.writeText(lines.join('\r\n'));
+        void vscode.window.showInformationMessage(`DAQ: copied ${snap.t.length} samples to the clipboard.`);
     }
 
     // ---- variable configuration files ----------------------------------------
@@ -218,16 +270,42 @@ export class DaqPanelManager implements vscode.Disposable {
     </select>
     <span class="sep"></span>
     <button id="btnFit" title="Reset zoom: fit all acquired data">Fit</button>
+    <button id="btnCursors" title="Toggle measurement cursors (click the chart to place cursor A, then B)">Cursors</button>
     <button id="btnClear" title="Discard acquired data">Clear</button>
     <span class="sep"></span>
     <button id="btnExport" title="Export acquired data (CSV / text)">Export&hellip;</button>
+    <button id="btnCopyTable" title="Copy acquired data to the clipboard (tab-separated)">Copy Table</button>
     <button id="btnSaveCfg" title="Save variable configuration to a file">Save Config&hellip;</button>
     <button id="btnLoadCfg" title="Load variable configuration from a file">Load Config&hellip;</button>
     <span id="status"></span>
 </div>
+<div id="triggerBar">
+    <label class="trigToggle"><input type="checkbox" id="trigEnabled" /> Trigger</label>
+    <label for="trigSource">on</label>
+    <select id="trigSource" title="Source variable tested against the level"></select>
+    <select id="trigEdge" title="Trigger edge">
+        <option value="rising">&#8599; rising</option>
+        <option value="falling">&#8600; falling</option>
+        <option value="both">&#8645; both</option>
+    </select>
+    <label for="trigLevel">level</label>
+    <input id="trigLevel" type="text" inputmode="decimal" title="Threshold the source must cross" />
+    <label for="trigMode">mode</label>
+    <select id="trigMode" title="single: stop after one capture &middot; normal: re-arm &middot; auto: free-run if no event">
+        <option value="single">single</option>
+        <option value="normal">normal</option>
+        <option value="auto">auto</option>
+    </select>
+    <label for="trigPre" title="Percentage of the window kept before the trigger">pre %</label>
+    <input id="trigPre" type="number" min="0" max="95" step="5" title="Pre-trigger percentage of the window" />
+    <label for="trigWindow" title="Total samples captured per trigger (pre + post)">win</label>
+    <input id="trigWindow" type="number" min="2" step="100" title="Capture window length in samples" />
+    <span id="trigStatus"></span>
+</div>
 <div id="chartArea">
     <canvas id="chart"></canvas>
     <div id="hint">wheel: zoom time &middot; shift+wheel: zoom value &middot; drag: pan &middot; double-click: fit latest data</div>
+    <div id="readout" class="hidden"></div>
 </div>
 <div id="bottom">
     <div id="varsPanel">
