@@ -87,6 +87,7 @@ Like the Live Watch, acquisition works both with GDB non-stop targets (zero intr
 | `auto` (default) | Try direct evaluation on the running target; if it fails, permanently switch this session to sampling. |
 | `nonStop` | Always evaluate directly. Requires GDB non-stop / async mode. |
 | `sample` | Always use pause → read → continue cycles. Use this when non-stop is not supported (typical for VEOS host debugging). |
+| `stoppedOnly` | **Never pause a running target.** Values only refresh while the target is stopped (breakpoint/step). The extension issues no interrupts at all — use this for unattended/overnight runs on native-Windows GDB where the pause/break-in race can crash the cppdbg debug engine. |
 
 Sampling details:
 
@@ -95,6 +96,33 @@ Sampling details:
 - The target is only resumed if the stop was caused by the sampler's own pause.
 
 > Tip: sampling makes the debugger briefly enter the "stopped" state, which by default moves editor focus. Set `"debug.focusEditorOnBreak": false` in your settings to avoid flicker.
+
+## Troubleshooting: sampling crashes on Windows ("Failed to find thread … for break event")
+
+On **native Windows GDB** (e.g. attaching directly to a VEOS host process such as `VeosVpuHost.exe` with `cppdbg`), a sampling pause is implemented by Windows injecting a transient *break-in* thread that runs `ntdll!DbgBreakPoint`. You may see this in the GDB console:
+
+```
+Thread NNNN received signal SIGTRAP, Trace/breakpoint trap.
+0x... in ntdll!DbgBreakPoint () from C:\Windows\SYSTEM32\ntdll.dll
+[Thread ... exited with code 0]
+ERROR: Error while trying to enter break state. Debugging will now stop. Failed to find thread NNNN for break event
+```
+
+GDB stops on that break-in thread and it exits immediately, so the **cppdbg (MIEngine) debug engine** can fail to build the break state and tears the whole session down. A related, recoverable symptom is `cannot execute this command without a live selective thread`, when the thread GDB had selected exited during a pause.
+
+This is a known interaction between MIEngine and native-Windows GDB — it is triggered *by the act of pausing*, not by your program. The extension mitigates it as much as an extension can:
+
+- It never adopts the transient break-in thread (or a short-lived worker thread) as the thread it reads from, and re-selects a live thread + retries when GDB's selected thread becomes stale.
+- It **guarantees the target is resumed** after every sampling pause (with retries and a thread-less fallback), so a failed `continue` can no longer silently leave your program halted.
+- It detects the fatal break-state error and a non-resuming target, then **stops all sampling automatically** and offers to switch to safe mode, instead of piling more pauses onto a dying session.
+
+For **zero tolerance on unattended/overnight runs**, choose one of:
+
+1. **`"gdbLiveWatch.mode": "stoppedOnly"`** — the extension never interrupts the running target; values refresh whenever your test naturally stops (breakpoint/step). This removes the trigger completely. Live-while-running values are unavailable in this mode.
+2. **Enable GDB non-stop mode** (if your target/gdbserver supports it) so values are read with zero pauses — see the VEOS notes below.
+3. **Use a newer GDB** where the windows-nat break-in handling is fixed.
+
+If you must sample while running, keep `gdbLiveWatch.adaptivePolling` on and use a larger `gdbLiveWatch.pollingInterval` (and DAQ period) to minimize the number of interrupts.
 
 ## Settings
 

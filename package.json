@@ -572,15 +572,17 @@
           "enum": [
             "auto",
             "nonStop",
-            "sample"
+            "sample",
+            "stoppedOnly"
           ],
           "enumDescriptions": [
             "Try direct evaluation while running (non-stop mode); automatically fall back to pause/read/continue sampling if the target/adapter does not support it.",
             "Only evaluate directly while the target is running. Requires GDB non-stop mode.",
-            "Always use pause/read/continue sampling cycles while the target is running. Use this when non-stop mode is not supported."
+            "Always use pause/read/continue sampling cycles while the target is running. Use this when non-stop mode is not supported.",
+            "Never pause a running target. Values only update while the target is stopped (breakpoint/step). Use this for unattended runs on native-Windows GDB where the pause/break-in race can crash the cppdbg debug engine."
           ],
           "default": "auto",
-          "description": "How variables are read while the target is running."
+          "description": "How variables are read while the target is running. Use 'stoppedOnly' to guarantee the extension never interrupts the running target."
         },
         "gdbLiveWatch.autoStartPolling": {
           "type": "boolean",

@@ -12,6 +12,8 @@ interface SessionInfo {
     stopWaiters: Array<(stopped: boolean) => void>;
     /** Active captures of DAP 'output' events (used to read GDB console command output). */
     outputCaptures: Set<{ chunks: string[] }>;
+    /** True once the adapter reported a fatal break-state error (session is dying). */
+    fatal: boolean;
 }
 
 export interface OutputCapture {
@@ -28,6 +30,25 @@ function isRealStopReason(reason: string): boolean {
     return REAL_STOP_REASONS.some((r) => reason.includes(r));
 }
 
+/**
+ * Adapter (MIEngine / cppdbg) messages that mean the debug engine itself has
+ * failed and the session is about to be torn down. The most important one on
+ * native Windows GDB is the break-in race: a sampling 'pause' makes Windows
+ * inject a transient break-in thread (ntdll!DbgBreakPoint) that GDB stops on
+ * and that then exits immediately, so MIEngine "Fail[s] to find thread N for
+ * break event" and stops debugging. We can't intercept that inside MIEngine,
+ * but detecting it lets us stop issuing further pauses and tell the user how to
+ * avoid it.
+ */
+const FATAL_ADAPTER_PATTERNS = [
+    /failed to find thread\s+\d+\s+for break event/i,
+    /error while trying to enter break state/i
+];
+
+function isFatalAdapterMessage(text: string): boolean {
+    return FATAL_ADAPTER_PATTERNS.some((re) => re.test(text));
+}
+
 const RESUME_REQUESTS = new Set([
     'continue', 'next', 'stepIn', 'stepOut', 'stepBack', 'reverseContinue', 'goto', 'restart'
 ]);
@@ -42,6 +63,14 @@ export class DebugSessionTracker implements vscode.Disposable {
     private readonly stateEmitter = new vscode.EventEmitter<vscode.DebugSession>();
     readonly onDidChangeState = this.stateEmitter.event;
 
+    private readonly fatalEmitter = new vscode.EventEmitter<vscode.DebugSession>();
+    /**
+     * Fires when the underlying debug engine reports a fatal break-state error
+     * (e.g. the native-Windows break-in thread race). The session is dying;
+     * listeners should stop sampling immediately and surface guidance.
+     */
+    readonly onDidEncounterFatalError = this.fatalEmitter.event;
+
     constructor() {
         this.disposables.push(
             vscode.debug.registerDebugAdapterTrackerFactory('*', {
@@ -54,7 +83,8 @@ export class DebugSessionTracker implements vscode.Disposable {
                     this.sessions.delete(s.id);
                 }
             }),
-            this.stateEmitter
+            this.stateEmitter,
+            this.fatalEmitter
         );
     }
 
@@ -66,7 +96,8 @@ export class DebugSessionTracker implements vscode.Disposable {
                 expectingPause: false,
                 autoContinueOk: false,
                 stopWaiters: [],
-                outputCaptures: new Set()
+                outputCaptures: new Set(),
+                fatal: false
             };
             this.sessions.set(sessionId, info);
         }
@@ -82,19 +113,31 @@ export class DebugSessionTracker implements vscode.Disposable {
                 }
                 if (msg.event === 'output' && typeof msg.body?.output === 'string') {
                     info.outputCaptures.forEach((c) => c.chunks.push(msg.body.output));
+                    if (!info.fatal && isFatalAdapterMessage(msg.body.output)) {
+                        info.fatal = true;
+                        // Wake any sampling cycle waiting on a stop so it stops promptly.
+                        info.stopWaiters.splice(0).forEach((w) => w(false));
+                        this.fatalEmitter.fire(session);
+                    }
                 } else if (msg.event === 'stopped') {
                     info.state = 'stopped';
                     const stopReason = String(msg.body?.reason ?? '').toLowerCase();
+                    const real = isRealStopReason(stopReason);
                     const stoppedThreadId =
                         typeof msg.body?.threadId === 'number' ? (msg.body.threadId as number) : undefined;
-                    // Keep a stable preferred thread: avoid replacing it with short-lived
-                    // signal/trap helper threads while the target is running.
-                    if (stoppedThreadId !== undefined && (info.threadId === undefined || isRealStopReason(stopReason))) {
+                    // Adopt the stopped thread as the preferred one only for *real*
+                    // stops (breakpoint / step / exception / entry). A sampling pause
+                    // on Windows stops on a transient break-in thread that exits
+                    // immediately; latching onto it would poison every later stack /
+                    // evaluate request ("cannot execute this command without a live
+                    // selective thread"). For sampling stops we let the poller resolve
+                    // a live thread from the current thread list instead.
+                    if (stoppedThreadId !== undefined && real) {
                         info.threadId = stoppedThreadId;
                     }
                     if (info.expectingPause) {
                         info.expectingPause = false;
-                        info.autoContinueOk = !isRealStopReason(stopReason);
+                        info.autoContinueOk = !real;
                     } else {
                         info.autoContinueOk = false;
                     }
@@ -103,6 +146,14 @@ export class DebugSessionTracker implements vscode.Disposable {
                 } else if (msg.event === 'continued') {
                     info.state = 'running';
                     this.stateEmitter.fire(session);
+                } else if (msg.event === 'thread' && msg.body?.reason === 'exited') {
+                    // The target churns worker threads; if our preferred thread just
+                    // exited, forget it so the next read re-resolves a live one.
+                    const exitedId =
+                        typeof msg.body?.threadId === 'number' ? (msg.body.threadId as number) : undefined;
+                    if (exitedId !== undefined && info.threadId === exitedId) {
+                        info.threadId = undefined;
+                    }
                 }
             },
             onWillReceiveMessage: (msg: any) => {
@@ -118,6 +169,11 @@ export class DebugSessionTracker implements vscode.Disposable {
         return this.sessions.get(sessionId)?.state ?? 'unknown';
     }
 
+    /** True once the adapter reported a fatal break-state error for this session. */
+    isFatal(sessionId: string): boolean {
+        return this.sessions.get(sessionId)?.fatal ?? false;
+    }
+
     getThreadId(sessionId: string): number | undefined {
         return this.sessions.get(sessionId)?.threadId;
     }
@@ -125,6 +181,14 @@ export class DebugSessionTracker implements vscode.Disposable {
     /** Updates the preferred live thread for subsequent stack/evaluate requests. */
     rememberThreadId(sessionId: string, threadId: number): void {
         this.info(sessionId).threadId = threadId;
+    }
+
+    /** Drops the preferred thread so the next read re-resolves a live one. */
+    forgetThreadId(sessionId: string): void {
+        const info = this.sessions.get(sessionId);
+        if (info) {
+            info.threadId = undefined;
+        }
     }
 
     /** Arm the "next pause stop is ours" flag before sending a sampling pause. */

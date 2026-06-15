@@ -80,6 +80,13 @@ export function activate(context: vscode.ExtensionContext): void {
             icon = '$(debug-pause)';
             label = 'Live Watch (stopped)';
             tip.push('Target stopped (breakpoint/step) — values reflect the current frame.');
+        } else if (
+            vscode.workspace.getConfiguration('gdbLiveWatch').get<string>('mode') === 'stoppedOnly'
+        ) {
+            icon = '$(shield)';
+            label = 'Live Watch (safe)';
+            tip.push('Safe mode: the running target is never paused.');
+            tip.push('Values refresh when the target stops (breakpoint/step).');
         } else if (stats.mode === 'sampling' || poller.isSamplingFallback(session.id)) {
             label = 'Live Watch (sampling)';
             tip.push('Reading via pause → read → continue sampling cycles.');
@@ -123,6 +130,45 @@ export function activate(context: vscode.ExtensionContext): void {
     setPollingContext();
     updateStatusBar();
 
+    // ---- fatal sampling / adapter failures -------------------------------
+    // The native-Windows GDB break-in race can crash the debug engine
+    // ("Failed to find thread N for break event"). When that (or any other
+    // unrecoverable sampling condition) is detected, stop all sampling so we
+    // never pile more pauses onto a dying session, and tell the user how to
+    // make overnight runs robust.
+    let fatalNotified = false;
+    const handleFatal = (message: string) => {
+        poller.stop();
+        daq.stop();
+        if (fatalNotified) {
+            return;
+        }
+        fatalNotified = true;
+        void vscode.window
+            .showErrorMessage(
+                `GDB Live Watch: ${message} This is usually the native-Windows GDB pause/break-in race in the cppdbg debugger, not your program. ` +
+                    'To make unattended test runs robust, switch the read mode to "stoppedOnly" (never pauses a running target), or enable GDB non-stop mode, or use a newer GDB.',
+                'Open Settings',
+                'Use Safe Mode'
+            )
+            .then((choice) => {
+                if (choice === 'Open Settings') {
+                    void vscode.commands.executeCommand(
+                        'workbench.action.openSettings',
+                        'gdbLiveWatch.mode'
+                    );
+                } else if (choice === 'Use Safe Mode') {
+                    void vscode.workspace
+                        .getConfiguration('gdbLiveWatch')
+                        .update('mode', 'stoppedOnly', vscode.ConfigurationTarget.Workspace);
+                }
+            });
+    };
+    tracker.onDidEncounterFatalError(() =>
+        handleFatal('the debug engine reported a fatal break-state error and the session is stopping.')
+    );
+    poller.onDidEncounterFatal((e) => handleFatal(e.message));
+
     // ---- session lifecycle ----------------------------------------------
     const autoStart = () =>
         vscode.workspace.getConfiguration('gdbLiveWatch').get<boolean>('autoStartPolling', true);
@@ -150,6 +196,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.debug.onDidStartDebugSession(() => {
+            fatalNotified = false;
             if (autoStart()) {
                 poller.start();
             }

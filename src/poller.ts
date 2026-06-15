@@ -18,6 +18,23 @@ const CLAIM_BUSY_TIMEOUT_MS = STOP_TIMEOUT_MS + 5000;
  */
 const MAX_SAMPLING_DUTY = 0.2;
 
+/** Errors that mean GDB's selected thread is invalid and a read should be retried. */
+const STALE_THREAD_PATTERNS = [
+    /live selective thread/i,
+    /no (?:selected )?thread/i,
+    /no frame (?:is )?selected/i,
+    /thread .*(?:has exited|no longer exists)/i
+];
+
+function isStaleThreadError(e: unknown): boolean {
+    const msg = String((e as any)?.message ?? e ?? '');
+    return STALE_THREAD_PATTERNS.some((re) => re.test(msg));
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms));
+}
+
 /** How the watch values are currently being read. */
 export type PollMode = 'idle' | 'stopped' | 'direct' | 'sampling';
 
@@ -69,6 +86,14 @@ export class Poller implements vscode.Disposable {
     /** Fires after every tick with up-to-date health metrics. */
     readonly onDidChangeStats = this.statsEmitter.event;
 
+    private readonly fatalEmitter = new vscode.EventEmitter<{ session: vscode.DebugSession; message: string }>();
+    /**
+     * Fires when sampling hits an unrecoverable condition (e.g. the target
+     * could not be resumed after a pause). Listeners should stop polling and
+     * surface guidance to the user.
+     */
+    readonly onDidEncounterFatal = this.fatalEmitter.event;
+
     constructor(
         private readonly model: LiveWatchModel,
         private readonly tracker: DebugSessionTracker
@@ -96,7 +121,7 @@ export class Poller implements vscode.Disposable {
         return vscode.workspace.getConfiguration('gdbLiveWatch').get<boolean>('adaptivePolling', true);
     }
 
-    private get mode(): 'auto' | 'nonStop' | 'sample' {
+    private get mode(): 'auto' | 'nonStop' | 'sample' | 'stoppedOnly' {
         return vscode.workspace.getConfiguration('gdbLiveWatch').get<any>('mode', 'auto');
     }
 
@@ -167,7 +192,7 @@ export class Poller implements vscode.Disposable {
     /** One-shot refresh, also used by the manual Refresh command. */
     async tick(): Promise<void> {
         const session = vscode.debug.activeDebugSession;
-        if (!session || this.busy || this.model.isEmpty) {
+        if (!session || this.busy || this.model.isEmpty || this.tracker.isFatal(session.id)) {
             return;
         }
         this.busy = true;
@@ -187,6 +212,14 @@ export class Poller implements vscode.Disposable {
 
             // Treat 'running' and 'unknown' as running.
             const mode = this.mode;
+
+            // Safe mode: never pause a running target. Values simply hold their
+            // last reading until the target stops naturally (breakpoint/step).
+            if (mode === 'stoppedOnly') {
+                pollMode = 'idle';
+                return;
+            }
+
             let useSampling =
                 mode === 'sample' || (mode === 'auto' && this.samplingSessions.has(session.id));
 
@@ -251,12 +284,18 @@ export class Poller implements vscode.Disposable {
     ): Promise<T> {
         await this.claimBusy();
         try {
+            if (this.tracker.isFatal(session.id)) {
+                throw new Error('the debug session is no longer responding');
+            }
             const state = this.tracker.getState(session.id);
             if (state === 'stopped') {
                 return await fn(await this.topFrameId(session));
             }
 
             const mode = this.mode;
+            if (mode === 'stoppedOnly') {
+                throw new Error('target is running (safe mode: stop the target to read this value)');
+            }
             let useSampling =
                 mode === 'sample' || (mode === 'auto' && this.samplingSessions.has(session.id));
 
@@ -272,18 +311,13 @@ export class Poller implements vscode.Disposable {
                 }
             }
 
+            // Let the read throw through withSampledStop so readAtStop can recover
+            // once from a stale selected thread; the sampling cycle still resumes
+            // the target in its finally block even when the read fails.
             let result: T | undefined;
-            let error: unknown;
             const done = await this.withSampledStop(session, async (frameId) => {
-                try {
-                    result = await fn(frameId);
-                } catch (e) {
-                    error = e;
-                }
+                result = await fn(frameId);
             });
-            if (error) {
-                throw error;
-            }
             if (!done) {
                 throw new Error('could not pause the target');
             }
@@ -301,6 +335,9 @@ export class Poller implements vscode.Disposable {
     async setNodeValue(session: vscode.DebugSession, nodeId: string, value: string): Promise<void> {
         await this.claimBusy();
         try {
+            if (this.tracker.isFatal(session.id)) {
+                throw new Error('the debug session is no longer responding');
+            }
             const state = this.tracker.getState(session.id);
             if (state === 'stopped') {
                 await this.writeAndRefresh(session, nodeId, value, await this.topFrameId(session));
@@ -308,6 +345,9 @@ export class Poller implements vscode.Disposable {
             }
 
             const mode = this.mode;
+            if (mode === 'stoppedOnly') {
+                throw new Error('target is running (safe mode: stop the target to write this value)');
+            }
             let useSampling =
                 mode === 'sample' || (mode === 'auto' && this.samplingSessions.has(session.id));
 
@@ -324,17 +364,9 @@ export class Poller implements vscode.Disposable {
                 }
             }
 
-            let writeError: unknown;
             const done = await this.withSampledStop(session, async (frameId) => {
-                try {
-                    await this.writeAndRefresh(session, nodeId, value, frameId);
-                } catch (e) {
-                    writeError = e;
-                }
+                await this.writeAndRefresh(session, nodeId, value, frameId);
             });
-            if (writeError) {
-                throw writeError;
-            }
             if (!done) {
                 throw new Error('could not pause the target to write the value');
             }
@@ -399,26 +431,90 @@ export class Poller implements vscode.Disposable {
             this.tracker.cancelExpectPause(session.id);
             return false;
         }
+        // The pause may have stopped on (and immediately destroyed) a transient
+        // break-in thread, which can leave the adapter in a fatal break state.
+        if (this.tracker.isFatal(session.id)) {
+            return false;
+        }
 
         const pauseStart = Date.now();
         try {
-            const frameId = await this.topFrameId(session);
-            await fn(frameId);
+            await this.readAtStop(session, fn);
         } finally {
             // Only resume if this stop was caused by our own pause. If a breakpoint
             // or exception hit in the meantime, leave the target stopped for the user.
             if (this.tracker.consumeAutoContinue(session.id)) {
-                const tid = (await this.resolveLiveThreadId(session)) ?? threadId;
-                try {
-                    await session.customRequest('continue', { threadId: tid });
-                } catch {
-                    // Target may have been resumed/killed elsewhere.
-                }
+                await this.resumeTarget(session, threadId);
                 // Time the target was halted by our sampling cycle (intrusion).
                 this.lastPauseMs = Date.now() - pauseStart;
             }
         }
         return true;
+    }
+
+    /**
+     * Runs the read callback at the current stop, recovering once from a stale
+     * selected thread (the "cannot execute this command without a live selective
+     * thread" / "no frame selected" errors that occur when the thread GDB had
+     * selected exited during the pause). The retry re-resolves a live thread and
+     * recomputes the top frame.
+     */
+    private async readAtStop(
+        session: vscode.DebugSession,
+        fn: (frameId: number | undefined) => Promise<unknown>
+    ): Promise<void> {
+        const frameId = await this.topFrameId(session);
+        try {
+            await fn(frameId);
+        } catch (e) {
+            if (!isStaleThreadError(e)) {
+                throw e;
+            }
+            // Drop the stale preferred thread and resolve a fresh one before retry.
+            this.tracker.forgetThreadId(session.id);
+            const retryFrame = await this.topFrameId(session);
+            await fn(retryFrame);
+        }
+    }
+
+    /**
+     * Resumes the target after a sampling pause, with retries. Leaving a target
+     * paused because a single 'continue' failed (e.g. the selected thread exited)
+     * would silently freeze the program under test, so this is treated as
+     * critical: it retries with a freshly resolved thread and a thread-less
+     * fallback, and escalates if the target still will not resume.
+     */
+    private async resumeTarget(session: vscode.DebugSession, fallbackThreadId: number): Promise<void> {
+        // A 'continue' request that resolves without throwing is the reliable
+        // signal that the resume was accepted. (The run-state flips to 'running'
+        // optimistically the moment the request is *sent*, so it can't be trusted
+        // to tell a successful resume from a rejected one.)
+        for (let attempt = 0; attempt < 4; attempt++) {
+            if (this.tracker.isFatal(session.id) || vscode.debug.activeDebugSession?.id !== session.id) {
+                return;
+            }
+            const tid = (await this.resolveLiveThreadId(session)) ?? fallbackThreadId;
+            try {
+                // First attempts target a concrete live thread (all-stop resumes
+                // everything anyway); the last attempt omits the thread id, which
+                // some adapters accept as "resume all" even when no thread is live.
+                const args = attempt < 3 ? { threadId: tid } : {};
+                await session.customRequest('continue', args);
+                return;
+            } catch {
+                // Try again with a re-resolved thread, then a thread-less continue.
+            }
+            await delay(100);
+        }
+
+        if (!this.tracker.isFatal(session.id) && vscode.debug.activeDebugSession?.id === session.id) {
+            this.fatalEmitter.fire({
+                session,
+                message:
+                    'The target could not be resumed after a live-watch sampling pause and may be halted. ' +
+                    'Live polling has been stopped to avoid interfering further.'
+            });
+        }
     }
 
     private async firstThreadId(session: vscode.DebugSession): Promise<number | undefined> {
@@ -435,12 +531,18 @@ export class Poller implements vscode.Disposable {
         }
         try {
             const resp = await session.customRequest('threads');
-            const id = resp.threads?.[0]?.id;
-            if (typeof id === 'number') {
-                this.tracker.rememberThreadId(session.id, id);
-                return id;
+            const ids = (resp.threads ?? [])
+                .map((t: any) => t?.id)
+                .filter((id: any): id is number => typeof id === 'number');
+            if (ids.length === 0) {
+                return undefined;
             }
-            return undefined;
+            // Prefer the lowest-numbered thread: GDB's primary/main thread is the
+            // most stable choice, whereas the highest ids are the short-lived
+            // worker / break-in threads that the target keeps spawning.
+            const id = Math.min(...ids);
+            this.tracker.rememberThreadId(session.id, id);
+            return id;
         } catch {
             return undefined;
         }
@@ -490,5 +592,6 @@ export class Poller implements vscode.Disposable {
         this.stop();
         this.pollingEmitter.dispose();
         this.statsEmitter.dispose();
+        this.fatalEmitter.dispose();
     }
 }
