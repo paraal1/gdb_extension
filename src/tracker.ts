@@ -9,6 +9,18 @@ interface SessionInfo {
     expectingPause: boolean;
     /** True if the last stop was caused by our sampling pause and is safe to auto-continue. */
     autoContinueOk: boolean;
+    /**
+     * True while the user has resumed the target (Continue/Step) and it has not
+     * yet reached a real stop. While set, the sampler must not pause the target,
+     * so the program can run unhindered to a breakpoint instead of being caught
+     * at a random PC.
+     */
+    freeRunning: boolean;
+    /**
+     * >0 while the poller is issuing its own sampling 'continue'. Those resumes
+     * must not be mistaken for a user-initiated run (which would arm freeRunning).
+     */
+    samplerResumeDepth: number;
     stopWaiters: Array<(stopped: boolean) => void>;
     /** Active captures of DAP 'output' events (used to read GDB console command output). */
     outputCaptures: Set<{ chunks: string[] }>;
@@ -95,6 +107,8 @@ export class DebugSessionTracker implements vscode.Disposable {
                 state: 'unknown',
                 expectingPause: false,
                 autoContinueOk: false,
+                freeRunning: false,
+                samplerResumeDepth: 0,
                 stopWaiters: [],
                 outputCaptures: new Set(),
                 fatal: false
@@ -121,6 +135,9 @@ export class DebugSessionTracker implements vscode.Disposable {
                     }
                 } else if (msg.event === 'stopped') {
                     info.state = 'stopped';
+                    // Any stop ends a user free-run: either a real breakpoint was
+                    // reached (the goal) or the target halted for some other reason.
+                    info.freeRunning = false;
                     const stopReason = String(msg.body?.reason ?? '').toLowerCase();
                     const real = isRealStopReason(stopReason);
                     const stoppedThreadId =
@@ -159,6 +176,12 @@ export class DebugSessionTracker implements vscode.Disposable {
             onWillReceiveMessage: (msg: any) => {
                 if (msg?.type === 'request' && RESUME_REQUESTS.has(msg.command)) {
                     info.state = 'running';
+                    // A resume the poller did not issue itself is a user-initiated
+                    // run (Continue/Step/Restart). Arm free-running so the sampler
+                    // backs off and lets the target reach a breakpoint.
+                    if (info.samplerResumeDepth === 0) {
+                        info.freeRunning = true;
+                    }
                     this.stateEmitter.fire(session);
                 }
             }
@@ -188,6 +211,28 @@ export class DebugSessionTracker implements vscode.Disposable {
         const info = this.sessions.get(sessionId);
         if (info) {
             info.threadId = undefined;
+        }
+    }
+
+    /**
+     * True while the user resumed the target and it has not yet hit a real stop
+     * (breakpoint/step/exception). The poller uses this to suspend sampling
+     * pauses so a user "Continue" reaches its breakpoint instead of being caught
+     * by a sampling pause at an unrelated location.
+     */
+    isFreeRunning(sessionId: string): boolean {
+        return this.sessions.get(sessionId)?.freeRunning ?? false;
+    }
+
+    /** Bracket a 'continue' the poller issues itself so it is not seen as a user run. */
+    beginSamplerResume(sessionId: string): void {
+        this.info(sessionId).samplerResumeDepth++;
+    }
+
+    endSamplerResume(sessionId: string): void {
+        const info = this.sessions.get(sessionId);
+        if (info && info.samplerResumeDepth > 0) {
+            info.samplerResumeDepth--;
         }
     }
 

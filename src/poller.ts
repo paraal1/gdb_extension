@@ -112,6 +112,15 @@ export class Poller implements vscode.Disposable {
         return this.samplingSessions.has(sessionId);
     }
 
+    /**
+     * True when the user has resumed the target toward a breakpoint, so sampling
+     * pauses are currently suppressed (the program is left to run to the
+     * breakpoint instead of being caught at an unrelated location).
+     */
+    isRunningToBreakpoint(sessionId: string): boolean {
+        return this.tracker.isFreeRunning(sessionId) && this.hasEnabledBreakpoint();
+    }
+
     private get intervalMs(): number {
         const ms = vscode.workspace.getConfiguration('gdbLiveWatch').get<number>('pollingInterval', 1000);
         return Math.max(100, ms);
@@ -189,6 +198,16 @@ export class Poller implements vscode.Disposable {
         this.samplingSessions.delete(sessionId);
     }
 
+    /**
+     * True if VS Code currently has at least one enabled breakpoint. Free-running
+     * only suspends sampling when there is actually a breakpoint to run to;
+     * otherwise normal sampling continues so live values do not freeze on a plain
+     * "Continue" with no breakpoints set.
+     */
+    private hasEnabledBreakpoint(): boolean {
+        return vscode.debug.breakpoints.some((bp) => bp.enabled);
+    }
+
     /** One-shot refresh, also used by the manual Refresh command. */
     async tick(): Promise<void> {
         const session = vscode.debug.activeDebugSession;
@@ -220,6 +239,14 @@ export class Poller implements vscode.Disposable {
                 return;
             }
 
+            // While the user is running the target toward a breakpoint, never
+            // issue a sampling pause: it would stop the program at an unrelated
+            // PC ("somewhere else") instead of letting it reach the breakpoint.
+            // Zero-intrusion direct (non-stop) reads are still fine and keep
+            // values live; only the intrusive pause/continue cycle is suppressed.
+            const runningToBreakpoint =
+                this.tracker.isFreeRunning(session.id) && this.hasEnabledBreakpoint();
+
             let useSampling =
                 mode === 'sample' || (mode === 'auto' && this.samplingSessions.has(session.id));
 
@@ -230,6 +257,12 @@ export class Poller implements vscode.Disposable {
                 // while running), not only when every expression fails. In
                 // 'nonStop' mode partial failures are expected, so leave it be.
                 if (mode === 'auto' && result.succeeded < result.total) {
+                    if (runningToBreakpoint) {
+                        // Hold last values rather than starting intrusive sampling
+                        // mid-run; sampling resumes once the breakpoint is hit.
+                        pollMode = 'idle';
+                        return;
+                    }
                     this.samplingSessions.add(session.id);
                     useSampling = true;
                 } else {
@@ -238,6 +271,10 @@ export class Poller implements vscode.Disposable {
                 }
             }
             if (useSampling) {
+                if (runningToBreakpoint) {
+                    pollMode = 'idle';
+                    return;
+                }
                 pollMode = 'sampling';
                 await this.withSampledStop(session, (frameId) => this.model.refresh(session, frameId));
             }
@@ -485,6 +522,17 @@ export class Poller implements vscode.Disposable {
      * fallback, and escalates if the target still will not resume.
      */
     private async resumeTarget(session: vscode.DebugSession, fallbackThreadId: number): Promise<void> {
+        // Bracket our own resumes so the tracker does not mistake them for a
+        // user "Continue" and arm free-running (which would suspend sampling).
+        this.tracker.beginSamplerResume(session.id);
+        try {
+            await this.resumeTargetInner(session, fallbackThreadId);
+        } finally {
+            this.tracker.endSamplerResume(session.id);
+        }
+    }
+
+    private async resumeTargetInner(session: vscode.DebugSession, fallbackThreadId: number): Promise<void> {
         // A 'continue' request that resolves without throwing is the reliable
         // signal that the resume was accepted. (The run-state flips to 'running'
         // optimistically the moment the request is *sent*, so it can't be trusted

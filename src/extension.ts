@@ -81,6 +81,12 @@ export function activate(context: vscode.ExtensionContext): void {
             icon = '$(debug-pause)';
             label = 'Live Watch (stopped)';
             tip.push('Target stopped (breakpoint/step) — values reflect the current frame.');
+        } else if (poller.isRunningToBreakpoint(session.id)) {
+            icon = '$(debug-continue)';
+            label = 'Live Watch (running to breakpoint)';
+            tip.push('You resumed the target with breakpoints set.');
+            tip.push('Sampling pauses are suspended so the program can reach a breakpoint.');
+            tip.push('Live sampling resumes automatically once a breakpoint is hit.');
         } else if (
             vscode.workspace.getConfiguration('gdbLiveWatch').get<string>('mode') === 'stoppedOnly'
         ) {
@@ -238,11 +244,13 @@ export function activate(context: vscode.ExtensionContext): void {
             updateStatusBar();
         }),
         // Immediate refresh whenever the target stops (breakpoint, step, ...).
+        // This runs even when live polling is off: a stop is a safe moment to
+        // read, and the native Watch window refreshes on every stop too, so the
+        // values must not stay frozen just because the polling timer is idle.
         tracker.onDidChangeState((session) => {
             if (
                 session === vscode.debug.activeDebugSession &&
-                tracker.getState(session.id) === 'stopped' &&
-                poller.polling
+                tracker.getState(session.id) === 'stopped'
             ) {
                 void poller.tick();
             }
