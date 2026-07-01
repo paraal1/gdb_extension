@@ -98,8 +98,11 @@ function withFastSymbolLoad(setupCommands: object[]): object[] {
     if (!enabled) {
         return setupCommands;
     }
+    // Only an actual cache-configuration command ("set index-cache ...")
+    // counts as the user managing the cache; diagnostic commands such as
+    // "set debug index-cache on" must not suppress the fast-load commands.
     const userManagesCache = setupCommands.some((c) =>
-        String((c as { text?: unknown })?.text ?? '').includes('index-cache')
+        /^\s*set\s+index-cache\b/.test(String((c as { text?: unknown })?.text ?? ''))
     );
     if (userManagesCache) {
         return setupCommands;
