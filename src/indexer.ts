@@ -99,24 +99,41 @@ async function indexOneBinary(
 
     const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'gdb-index-'));
     try {
-        // Step 1: let GDB scan the DWARF once and write the index file.
-        log.appendLine(`  building index (this is the slow one-time DWARF scan)...`);
-        await execFileAsync(
-            gdb,
-            [
-                '--batch',
-                '-nx',
-                '-iex',
-                'set auto-load no',
-                '-iex',
-                'maintenance set worker-threads unlimited',
-                '-ex',
-                `file ${file}`,
-                '-ex',
-                `save gdb-index ${tmpDir}`
-            ],
-            { windowsHide: true, maxBuffer: 64 * 1024 * 1024 }
-        );
+        // Step 1: let GDB scan the DWARF once and write the index file. The
+        // binary is passed as GDB's positional program argument (not through a
+        // `file` console command) so paths with spaces need no quoting. `save
+        // gdb-index` takes the whole rest of the line as the directory, so the
+        // temp dir needs no quoting either.
+        log.appendLine('  building index (this is the slow one-time DWARF scan)...');
+        let gdbOutput = '';
+        try {
+            const { stdout, stderr } = await execFileAsync(
+                gdb,
+                [
+                    '--batch',
+                    '-nx',
+                    '-iex',
+                    'set auto-load no',
+                    '-iex',
+                    'maintenance set worker-threads unlimited',
+                    '-ex',
+                    `save gdb-index ${tmpDir}`,
+                    file
+                ],
+                { windowsHide: true, maxBuffer: 64 * 1024 * 1024 }
+            );
+            gdbOutput = `${stdout ?? ''}\n${stderr ?? ''}`.trim();
+        } catch (e) {
+            // GDB --batch exits non-zero when a command errored; keep its
+            // output for the log so the real cause is visible.
+            const err = e as { stdout?: string; stderr?: string; message?: string };
+            gdbOutput = `${err.stdout ?? ''}\n${err.stderr ?? ''}`.trim() || String(err.message ?? e);
+        }
+        if (gdbOutput) {
+            for (const line of gdbOutput.split(/\r?\n/)) {
+                log.appendLine(`    gdb: ${line}`);
+            }
+        }
 
         const indexFile = path.join(tmpDir, `${path.basename(file)}.gdb-index`);
         try {
@@ -125,8 +142,17 @@ async function indexOneBinary(
                 return { file, status: 'no-debug-info', detail: 'GDB produced an empty index' };
             }
         } catch {
-            // GDB writes no index file when the binary has no DWARF debug info.
-            return { file, status: 'no-debug-info' };
+            // No index file: either the binary really has no DWARF debug info
+            // ("no debugging symbols found" in the GDB output above), or GDB
+            // failed on it — the distinction is in the logged output.
+            const noDebug = /no debugging symbols found/i.test(gdbOutput);
+            return {
+                file,
+                status: noDebug ? 'no-debug-info' : 'failed',
+                detail: noDebug
+                    ? undefined
+                    : `GDB produced no index — see the gdb output above (${gdbOutput.split(/\r?\n/).pop() ?? 'no output'})`
+            };
         }
 
         // Step 2: embed the index. objcopy rewrites the file, so write to a
