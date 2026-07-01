@@ -58,6 +58,18 @@ With `gdbLiveWatch.autoAttach.fastSymbolLoad` (default on), one-click attach aut
 
 If you debug through your own `launch.json` (not one-click attach), add the same commands to that configuration's `setupCommands` yourself.
 
+> **Limitation:** GDB's index cache keys entries by the binary's **build-id**, and MinGW-linked Windows binaries (which dSPACE model DLLs typically are) carry none by default — GDB then silently never stores an index (`show index-cache stats` keeps reporting only misses, and the cache directory is never created). In that case use the command below instead.
+
+### Optimize Release for Fast Symbol Loading (works without build-id)
+
+The **GDB Symbols: Optimize Release for Fast Symbol Loading** command (also in the Symbols view's `…` menu) embeds the symbol index **directly into the binaries** (a `.gdb_index` section, like GNU `gdb-add-index`), which works regardless of build-ids:
+
+1. Stop the debug session **and the target process** (the files must not be in use).
+2. Run the command. With a recently active session it picks up the host executable and the dSPACE model modules automatically; otherwise it asks you to select the binaries.
+3. It runs GDB's one-time DWARF scan per binary (`save gdb-index`), then embeds the result with `objcopy` (found next to the configured GDB, or in PATH).
+
+From then on, **every** attach to that release — first ones included, on any machine — skips the DWARF scan entirely. This is the closest equivalent to winIDEA's persistent symbol database. Re-run the command once per new release (already-indexed binaries are detected and skipped).
+
 Two more caches keep the extension's **Symbols view** itself fast:
 
 - The raw `info variables` / `info functions` listings are cached on disk per release (keyed by content hashes of the host executable and the symbol-bearing DLLs), so reopening a session on a known release skips the multi-second GDB query entirely. Re-attach sessions wait a few seconds for the module list so the right release is fingerprinted before caching.

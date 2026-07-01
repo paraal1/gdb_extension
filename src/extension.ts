@@ -9,6 +9,7 @@ import { SymbolNode, SymbolTreeProvider } from './symbolsProvider';
 import { DaqEngine } from './daq';
 import { DaqPanelManager } from './daqPanel';
 import { attachToConfiguredProcess, configureAutoAttach } from './attach';
+import { optimizeReleaseSymbols } from './indexer';
 
 export function activate(context: vscode.ExtensionContext): void {
     const model = new LiveWatchModel(context.workspaceState);
@@ -939,6 +940,10 @@ export function activate(context: vscode.ExtensionContext): void {
                 void vscode.env.clipboard.writeText(node.entry.name);
             }
         }),
+
+        vscode.commands.registerCommand('gdbSymbols.optimizeRelease', () =>
+            optimizeReleaseSymbols(symbols, output)
+        ),
 
         vscode.commands.registerCommand('gdbSymbols.showSourceFiles', async () => {
             if (!symbols.hasData && vscode.debug.activeDebugSession) {

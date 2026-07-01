@@ -247,6 +247,12 @@
         "icon": "$(list-tree)"
       },
       {
+        "command": "gdbSymbols.optimizeRelease",
+        "title": "Optimize Release for Fast Symbol Loading",
+        "category": "GDB Symbols",
+        "icon": "$(zap)"
+      },
+      {
         "command": "gdbSymbols.configureSourcePathFilter",
         "title": "Filter Symbols by Source Path...",
         "category": "GDB Symbols",
@@ -373,6 +379,11 @@
           "command": "gdbSymbols.showSourceFiles",
           "when": "view == gdbSymbols",
           "group": "settings@1"
+        },
+        {
+          "command": "gdbSymbols.optimizeRelease",
+          "when": "view == gdbSymbols",
+          "group": "settings@4"
         },
         {
           "command": "gdbSymbols.configureSourcePathFilter",
