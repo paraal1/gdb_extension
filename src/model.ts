@@ -43,10 +43,24 @@ export interface WatchGroup {
     roots: WatchNode[];
 }
 
-export type WatchTreeNode = WatchGroup | WatchNode;
+/**
+ * Synthetic trailing row rendered at the bottom of every group. It is not part
+ * of the data model; it only provides a large, always-visible click target to
+ * add a new expression without having to reach the group's title-bar button.
+ */
+export interface AddRow {
+    readonly kind: 'add';
+    readonly group: WatchGroup;
+}
+
+export type WatchTreeNode = WatchGroup | WatchNode | AddRow;
 
 export function isGroup(node: WatchTreeNode): node is WatchGroup {
     return (node as WatchGroup).roots !== undefined && (node as WatchNode).isRoot === undefined;
+}
+
+export function isAddRow(node: WatchTreeNode): node is AddRow {
+    return (node as AddRow).kind === 'add';
 }
 
 /** Persisted shape of one watch expression. */

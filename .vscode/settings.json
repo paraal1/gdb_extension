@@ -1,0 +1,9 @@
+{
+    "gdbLiveWatch.hexFormat": false,
+    "gdbSymbols.sourcePathFilter": [
+        "Z:\\"
+    ],
+    "gdbSymbols.sourcePathExclude": [
+        "VTT"
+    ]
+}

@@ -21,9 +21,53 @@ On top of that, a **DAQ Chart** panel (daqIDEA-style data acquisition) records v
 - **Adapter agnostic** — talks plain DAP to the active debug session, so it works with `cppdbg` (ms-vscode.cpptools), `cortex-debug`, and other GDB-based debug adapters.
 - **Persistent expressions** — watch expressions are stored per workspace and survive restarts.
 
+## One-click attach
+
+The **Attach GDB to Running Process** button (plug icon) in the **Live Watch (GDB)** view title — also available as the `GDB Live Watch: Attach GDB to Running Process` command — starts a `cppdbg` GDB *attach* session in a single click, with no process picker and no `${command:pickProcess}` prompt.
+
+**No `launch.json` is required.** The extension builds the `cppdbg` attach configuration directly from the settings below: it finds the most recently started process matching `processName`, resolves its executable, and attaches using your `miDebuggerPath` and `setupCommands`. The Live Watch, Symbols and DAQ panels come up through the normal session lifecycle.
+
+Optionally, set `gdbLiveWatch.autoAttach.configName` to reuse a named attach configuration from `launch.json` instead of the settings.
+
+| Setting | Default | Description |
+|---|---|---|
+| `gdbLiveWatch.autoAttach.processName` | `VeosVpuHost.exe` | Image name to attach to (trailing `.exe` optional). Empty = derived from `program`. |
+| `gdbLiveWatch.autoAttach.miDebuggerPath` | `C:/winIDEA/gdb_multiarch/gdb.exe` | Path to the GDB executable. Empty = use the GDB bundled with the C/C++ extension. |
+| `gdbLiveWatch.autoAttach.program` | `""` | Optional executable path. Empty = resolved from the running process. |
+| `gdbLiveWatch.autoAttach.setupCommands` | enable pretty-printing | GDB `setupCommands` sent on attach. |
+| `gdbLiveWatch.autoAttach.configName` | `""` | Optional name of a `launch.json` attach config to reuse instead of the settings. |
+| `gdbLiveWatch.autoAttach.fastSymbolLoad` | `true` | Prepend GDB index-cache commands to the setup commands so symbol loading is fast on every re-attach (see below). |
+
+> Windows-only (uses a CIM/PowerShell query to locate the process). Requires the C/C++ extension (`cppdbg`) and a working GDB.
+
+## Fast symbol loading (winIDEA-style)
+
+Attaching to a big release used to spend most of its time in GDB itself: by default GDB re-scans the **entire DWARF debug info** of the executable and every symbol-bearing DLL on **every** attach. winIDEA avoids this by keeping its own persistent symbol database — GDB has the same mechanism, the **index cache**, it is just off by default.
+
+With `gdbLiveWatch.autoAttach.fastSymbolLoad` (default on), one-click attach automatically prepends these commands to the `setupCommands`:
+
+```json
+{ "text": "set index-cache enabled on", "ignoreFailures": true },
+{ "text": "set index-cache on", "ignoreFailures": true },
+{ "text": "set debuginfod enabled off", "ignoreFailures": true },
+{ "text": "maintenance set worker-threads unlimited", "ignoreFailures": true }
+```
+
+- **First attach to a release**: GDB builds the symbol index once (multi-core) and persists it on disk, keyed by the binary's identity.
+- **Every later attach to the same release**: the index is mapped back in from disk instead of being rebuilt — symbol loading drops from tens of seconds to a few seconds, per release. Switching between releases stays fast too, since each release keeps its own cache entry.
+
+If you debug through your own `launch.json` (not one-click attach), add the same commands to that configuration's `setupCommands` yourself.
+
+Two more caches keep the extension's **Symbols view** itself fast:
+
+- The raw `info variables` / `info functions` listings are cached on disk per release (keyed by content hashes of the host executable and the symbol-bearing DLLs), so reopening a session on a known release skips the multi-second GDB query entirely. Re-attach sessions wait a few seconds for the module list so the right release is fingerprinted before caching.
+- Those content hashes are computed once per binary and reused while the file is unchanged, so signature checks no longer re-read multi-hundred-MB DLLs on every load.
+
+> Tip for the biggest binaries: you can also bake the index straight into a binary once with GDB's `gdb-add-index <file>` utility — then even the first load is fast, on any machine.
+
 ## Usage
 
-1. Start your GDB debug session as usual (e.g. a `cppdbg` *attach* or *launch* configuration targeting your VEOS host application via `gdbserver`/remote GDB).
+1. Start your GDB debug session as usual (e.g. a `cppdbg` *attach* or *launch* configuration targeting your VEOS host application via `gdbserver`/remote GDB) — or just use the **Attach GDB to Running Process** button above.
 2. Open the **Live Watch (GDB)** view in the Run & Debug sidebar.
 3. Add expressions with the **+** button (or right-click a selection in the editor → *Add Selection to Live Watch*).
 4. Polling starts automatically with the session (configurable). Use the play/pause button in the view title or the status bar item to toggle it.
@@ -35,8 +79,9 @@ While the target is **running**, expressions must be resolvable without a stack 
 The **Symbols (GDB)** view (Run & Debug sidebar) browses the symbol table that GDB loaded from the target (e.g. `VECU.dll`), similar to winIDEA's Symbol Browser:
 
 - **Categories** — *Variables*, *Constants* (`const` variables), *Functions* and *Types*, grouped by source file (module), with declaration and line info.
-- **Loaded once, cached for the session** — the full table is read automatically when the debug session starts (via `info variables` / `info functions` / `info types`, using a sampling cycle if the target is running) and kept in memory. Use **Reload Symbols** (refresh icon) only if the symbol file changed.
-- **Live filtering as you type** — the filter icon opens an input that narrows the symbol tree on every keystroke (plain substring or regular expression, matched locally against the cached table — no GDB round-trips). Matches auto-expand while a filter is active. Press *Enter* to keep the filter, *Esc* to restore the previous one.
+- **Loaded once, cached for the session** — the full table is read automatically when the debug session starts (via `info variables` / `info functions`, using a sampling cycle if the target is running) and kept in memory. Use **Reload Symbols** (refresh icon) only if the symbol file changed.
+- **Filtering with a GDB-side query** — the filter icon opens an input that narrows any already-loaded table on every keystroke for quick preview. Press *Enter* to ask GDB for `info variables/functions REGEXP`, so selective name filters reduce the symbol query itself instead of loading everything and hiding rows afterward.
+- **Source-path filters reduce memory, not the GDB round-trip** — the include/exclude source-path settings (and the automatic dSPACE-model scope) are applied while parsing GDB's response, so excluded files are never held in memory or written to the on-disk cache; changing them re-parses the already-fetched listing instead of re-querying GDB. GDB's `info variables`/`info functions` have no file-scoping option of their own, so the query itself always enumerates the whole symbol table first - the Enter-to-filter *name* query is the only thing that can actually shrink that GDB-side cost.
 - **Go to source** — click a symbol (or use the go-to icon) to open its declaration. Compile-time paths that don't exist locally are resolved by searching the workspace.
 - **Add to Live Watch** — the eye icon (or context menu) adds the symbol to the Live Watch panel, like winIDEA's double-click-to-watch.
 - **Bulk add** — the symbol tree supports multi-selection (Ctrl/Shift-click), so *Add to Live Watch* / *Add to DAQ Chart* can add many symbols at once.

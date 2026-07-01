@@ -268,6 +268,14 @@ body {
     overflow-y: auto;
 }
 
+.varEmptyHint {
+    padding: 10px 8px;
+    opacity: 0.6;
+    font-style: italic;
+    cursor: pointer;
+    user-select: none;
+}
+
 .varRow {
     display: flex;
     align-items: center;

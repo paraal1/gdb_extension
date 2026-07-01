@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { DisplayOptions, isGroup, LiveWatchModel, ValueFormat, WatchGroup, WatchNode } from './model';
+import { DisplayOptions, isAddRow, isGroup, LiveWatchModel, ValueFormat, WatchGroup, WatchNode } from './model';
 import { LiveWatchDragAndDropController, LiveWatchTreeProvider } from './provider';
 import { Poller } from './poller';
 import { DebugSessionTracker } from './tracker';
@@ -8,16 +8,27 @@ import { SymbolEntry, SymbolService, watchExpressionFor } from './symbols';
 import { SymbolNode, SymbolTreeProvider } from './symbolsProvider';
 import { DaqEngine } from './daq';
 import { DaqPanelManager } from './daqPanel';
+import { attachToConfiguredProcess, configureAutoAttach } from './attach';
 
 export function activate(context: vscode.ExtensionContext): void {
     const model = new LiveWatchModel(context.workspaceState);
     const tracker = new DebugSessionTracker();
     const poller = new Poller(model, tracker);
     const provider = new LiveWatchTreeProvider(model);
-    const symbols = new SymbolService(tracker, poller, context.workspaceState);
+    const symbols = new SymbolService(
+        tracker,
+        poller,
+        context.workspaceState,
+        vscode.Uri.joinPath(context.globalStorageUri, 'symbol-cache')
+    );
     const symbolsProvider = new SymbolTreeProvider(symbols);
     const daq = new DaqEngine(context.workspaceState, poller);
     const daqPanel = new DaqPanelManager(context, daq);
+
+    // Output channel used to print human-readable diagnostics such as the list
+    // of source files the symbols were loaded from.
+    const output = vscode.window.createOutputChannel('GDB Symbols');
+    context.subscriptions.push(output);
 
     const treeView = vscode.window.createTreeView('gdbLiveWatch', {
         treeDataProvider: provider,
@@ -44,20 +55,95 @@ export function activate(context: vscode.ExtensionContext): void {
     updateSymbolsUi();
 
     treeView.onDidExpandElement((e) => {
-        if (!isGroup(e.element)) {
+        if (!isGroup(e.element) && !isAddRow(e.element)) {
             model.expandedIds.add(e.element.id);
         }
     });
     treeView.onDidCollapseElement((e) => {
-        if (!isGroup(e.element)) {
+        if (!isGroup(e.element) && !isAddRow(e.element)) {
             model.expandedIds.delete(e.element.id);
         }
     });
 
+    // ---- attach status bar ----------------------------------------------
+    // Always-visible indicator of the overall connection state so the user can
+    // see at a glance whether the debugger is attached — even when no session
+    // is running yet. Clicking it starts the one-click attach.
+    const attachStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 52);
+    attachStatusBar.command = 'gdbLiveWatch.attachToProcess';
+
+    // True while a one-click attach is in progress (between the user invoking
+    // the attach command and a debug session actually starting).
+    let attaching = false;
+
+    const updateAttachStatusBar = () => {
+        const session = vscode.debug.activeDebugSession;
+        if (attaching && !session) {
+            attachStatusBar.text = '$(sync~spin) GDB: Attaching';
+            attachStatusBar.tooltip = 'GDB Live Watch: attaching to the target process...';
+            attachStatusBar.backgroundColor = undefined;
+        } else if (!session) {
+            attachStatusBar.text = '$(debug-disconnect) GDB: Not Attached';
+            attachStatusBar.tooltip = 'GDB Live Watch: not attached (click to attach)';
+            attachStatusBar.backgroundColor = undefined;
+        } else if (tracker.getState(session.id) === 'stopped') {
+            attachStatusBar.text = '$(debug-pause) GDB: Stopped';
+            attachStatusBar.tooltip = 'GDB Live Watch: attached — target stopped (breakpoint/step)';
+            attachStatusBar.backgroundColor = undefined;
+        } else {
+            attachStatusBar.text = '$(debug-start) GDB: Running';
+            attachStatusBar.tooltip = 'GDB Live Watch: attached — target running';
+            attachStatusBar.backgroundColor = undefined;
+        }
+        attachStatusBar.show();
+    };
+
     // ---- status bar ------------------------------------------------------
     const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
     statusBar.command = 'gdbLiveWatch.togglePolling';
+
+    // Shows the executable currently being debugged/attached to. Its name
+    // usually identifies which release/build is running, so it is surfaced
+    // separately and stays visible for the whole session (independent of
+    // whether live polling is on).
+    const exeStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 51);
+    const executablePath = (session: vscode.DebugSession): string | undefined => {
+        const cfg = session.configuration as { program?: string; executable?: string };
+        return cfg.program ?? cfg.executable;
+    };
+    const updateExeStatusBar = () => {
+        const session = vscode.debug.activeDebugSession;
+        const binPath = session && executablePath(session);
+        if (!binPath) {
+            exeStatusBar.hide();
+            return;
+        }
+        exeStatusBar.text = `$(file-binary) ${path.basename(binPath)}`;
+        exeStatusBar.tooltip = `Debugging executable:\n${binPath}`;
+        exeStatusBar.show();
+
+        // Also surface the dSPACE model name (e.g. MB_ZC_Rear_vECU) taken from
+        // the dSPACE .dll/.vap module loaded into the host process. This is the
+        // real identity of what is being debugged in an attach setup, where the
+        // executable itself is just the generic VEOS host runner.
+        void symbols.getDspaceModelName(session).then((model) => {
+            if (vscode.debug.activeDebugSession !== session) {
+                return;
+            }
+            if (model) {
+                exeStatusBar.text = `$(file-binary) ${path.basename(binPath)} $(chip) ${model}`;
+                exeStatusBar.tooltip = `Debugging executable:\n${binPath}\n\ndSPACE model:\n${model}`;
+            } else {
+                exeStatusBar.text = `$(file-binary) ${path.basename(binPath)}`;
+                exeStatusBar.tooltip = `Debugging executable:\n${binPath}`;
+            }
+            exeStatusBar.show();
+        });
+    };
+
     const updateStatusBar = () => {
+        updateExeStatusBar();
+        updateAttachStatusBar();
         const session = vscode.debug.activeDebugSession;
         if (!session) {
             statusBar.hide();
@@ -134,6 +220,7 @@ export function activate(context: vscode.ExtensionContext): void {
         updateStatusBar();
     });
     poller.onDidChangeStats(() => updateStatusBar());
+    tracker.onDidChangeState(() => updateStatusBar());
     setPollingContext();
     updateStatusBar();
 
@@ -204,6 +291,7 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         vscode.debug.onDidStartDebugSession(() => {
             fatalNotified = false;
+            attaching = false;
             if (autoStart()) {
                 poller.start();
             }
@@ -243,6 +331,10 @@ export function activate(context: vscode.ExtensionContext): void {
             }
             updateStatusBar();
         }),
+        // The active session may still point at a dying session while
+        // onDidTerminate runs, which left the status bar showing "Running"
+        // after a disconnect. Refresh once VS Code actually clears/changes it.
+        vscode.debug.onDidChangeActiveDebugSession(() => updateStatusBar()),
         // Immediate refresh whenever the target stops (breakpoint, step, ...).
         // This runs even when live polling is off: a stop is a safe moment to
         // read, and the native Watch window refreshes on every stop too, so the
@@ -260,17 +352,42 @@ export function activate(context: vscode.ExtensionContext): void {
                 poller.restartIfPolling();
                 updateStatusBar();
             }
-            if (
-                e.affectsConfiguration('gdbSymbols.maxSymbolsPerCategory') ||
-                e.affectsConfiguration('gdbSymbols.includeNonDebugging')
-            ) {
-                // View settings only affect the cached table's presentation.
+            if (e.affectsConfiguration('gdbSymbols.maxSymbolsPerCategory')) {
+                // View setting only affects the cached table's presentation.
                 symbols.refreshView();
+            }
+            if (
+                e.affectsConfiguration('gdbSymbols.sourcePathFilter') ||
+                e.affectsConfiguration('gdbSymbols.sourcePathExclude') ||
+                e.affectsConfiguration('gdbSymbols.scopeToDspaceModel')
+            ) {
+                // These settings only decide which already-fetched source files
+                // are kept - GDB's `info variables`/`info functions` have no
+                // file-scoping option, so they cannot make that query itself any
+                // cheaper. Re-apply them to the cached raw listings (fast,
+                // in-memory re-parse) instead of re-running the expensive query.
+                symbols.reapplySourceFilters();
+            }
+            if (e.affectsConfiguration('gdbSymbols.includeNonDebugging')) {
+                // The non-debugging section is now skipped at parse time, so a
+                // change requires re-reading the symbol table from GDB/cache.
+                const session = vscode.debug.activeDebugSession;
+                if (session && symbols.hasData) {
+                    symbols.load(session, { force: true }).catch(() => {
+                        /* surfaced via the view's loading state */
+                    });
+                } else {
+                    symbols.refreshView();
+                }
             }
         })
     );
 
     // ---- commands ---------------------------------------------------------
+    // Tracks the last clicked watch node so a quick second click on the same
+    // node is recognised as a double-click (see gdbLiveWatch.nodeClicked).
+    let lastClick: { id: string | undefined; time: number } = { id: undefined, time: 0 };
+
     const addExpression = async (initial?: string, group?: WatchGroup) => {
         const expression = await vscode.window.showInputBox({
             prompt: 'Expression to watch (evaluated by GDB)',
@@ -500,6 +617,23 @@ export function activate(context: vscode.ExtensionContext): void {
             }
         }),
 
+        // Emulates a double-click on a watch node: a second click on the same
+        // node within DOUBLE_CLICK_MS opens the value editor; a single click
+        // just selects it (default tree behaviour).
+        vscode.commands.registerCommand('gdbLiveWatch.nodeClicked', (node: WatchNode) => {
+            if (!node) {
+                return;
+            }
+            const DOUBLE_CLICK_MS = 500;
+            const now = Date.now();
+            if (lastClick.id === node.id && now - lastClick.time <= DOUBLE_CLICK_MS) {
+                lastClick = { id: undefined, time: 0 };
+                void vscode.commands.executeCommand('gdbLiveWatch.setValue', node);
+                return;
+            }
+            lastClick = { id: node.id, time: now };
+        }),
+
         vscode.commands.registerCommand('gdbLiveWatch.setValue', async (node: WatchNode) => {
             const session = vscode.debug.activeDebugSession;
             if (!node) {
@@ -683,21 +817,50 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('gdbSymbols.load', () => loadSymbols(true)),
 
         vscode.commands.registerCommand('gdbSymbols.search', async () => {
-            // If nothing is cached yet (e.g. auto-load disabled), load once now.
-            if (!symbols.hasData && vscode.debug.activeDebugSession) {
-                await loadSymbols(false);
-            }
-
-            // Live filter: every keystroke narrows the symbol tree immediately.
+            // Live filter: every keystroke narrows any already-loaded table
+            // immediately. Pressing Enter asks GDB for a filtered listing so the
+            // expensive symbol query itself can shrink for selective names.
             const previous = symbols.filter;
             const input = vscode.window.createInputBox();
-            input.title = 'Filter Symbols (live)';
+            input.title = 'Filter Symbols';
             input.prompt =
-                'Type to filter symbol names as you type (substring or regular expression). You can paste a function call like Rte_Read_R_FS2() to find which module it is in. Enter or closing the prompt keeps the filter.';
+                'Type a symbol name filter. Press Enter to query GDB with the filter; closing the prompt keeps the local preview.';
             input.placeholder = 'e.g. Something, ^motor_, Adc.*Init, Rte_Read_R_FS2()';
             input.value = previous;
 
             let debounce: ReturnType<typeof setTimeout> | undefined;
+            let accepted = false;
+            const applyFilter = async (queryGdb: boolean) => {
+                if (debounce) {
+                    clearTimeout(debounce);
+                    debounce = undefined;
+                }
+                const term = input.value.trim();
+                symbols.rememberFilter(term);
+                if (!queryGdb) {
+                    symbols.filter = term;
+                    return;
+                }
+                const session = vscode.debug.activeDebugSession;
+                if (!session) {
+                    symbols.filter = term;
+                    return;
+                }
+                try {
+                    if (term) {
+                        await symbols.loadFiltered(session, term, { force: true });
+                    } else {
+                        await symbols.load(session, { force: false });
+                        symbols.filter = '';
+                    }
+                } catch (e: any) {
+                    symbols.filter = term;
+                    const msg = String(e?.message ?? e).split('\n')[0];
+                    void vscode.window.showErrorMessage(
+                        `GDB Symbols: failed to query filtered symbols: ${msg}`
+                    );
+                }
+            };
             input.onDidChangeValue((value) => {
                 if (debounce) {
                     clearTimeout(debounce);
@@ -707,21 +870,14 @@ export function activate(context: vscode.ExtensionContext): void {
                 }, 120);
             });
             input.onDidAccept(() => {
-                if (debounce) {
-                    clearTimeout(debounce);
-                }
-                symbols.filter = input.value.trim();
-                symbols.rememberFilter(input.value);
+                accepted = true;
+                void applyFilter(true);
                 input.hide();
             });
             input.onDidHide(() => {
-                if (debounce) {
-                    clearTimeout(debounce);
+                if (!accepted) {
+                    void applyFilter(false);
                 }
-                // Keep whatever the user typed, even if the prompt is dismissed
-                // by clicking elsewhere (e.g. into the symbol tree).
-                symbols.filter = input.value.trim();
-                symbols.rememberFilter(input.value);
                 input.dispose();
             });
             input.show();
@@ -782,7 +938,166 @@ export function activate(context: vscode.ExtensionContext): void {
             if (node?.kind === 'symbol') {
                 void vscode.env.clipboard.writeText(node.entry.name);
             }
+        }),
+
+        vscode.commands.registerCommand('gdbSymbols.showSourceFiles', async () => {
+            if (!symbols.hasData && vscode.debug.activeDebugSession) {
+                await loadSymbols(false);
+            }
+            if (!symbols.hasData) {
+                void vscode.window.showInformationMessage(
+                    'GDB Symbols: no symbols loaded yet.'
+                );
+                return;
+            }
+            const summary = symbols.getSourceFileSummary();
+            output.clear();
+
+            // Where the debug info physically comes from: the main executable and
+            // the loaded shared libraries / DLLs. This is what GDB reads the
+            // source-file names and line numbers out of. Only available while a
+            // session is live (needs the DAP 'modules' request).
+            const session = vscode.debug.activeDebugSession;
+            if (session) {
+                const cfg = session.configuration as { program?: string; executable?: string };
+                const binPath = cfg.program ?? cfg.executable;
+                output.appendLine(
+                    `Debugged executable: ${binPath ?? '(unknown)'}`
+                );
+                const modules = await symbols.getModules(session);
+                if (modules.length > 0) {
+                    output.appendLine('');
+                    output.appendLine(`Loaded modules (${modules.length}):`);
+                    for (const m of modules) {
+                        const where = m.symbolFilePath ? ` [symbols: ${m.symbolFilePath}]` : '';
+                        const status = m.symbolStatus ? ` — ${m.symbolStatus}` : '';
+                        output.appendLine(`  ${m.path ?? m.name}${status}${where}`);
+                    }
+                } else {
+                    output.appendLine(
+                        '(the debug adapter did not report a module list)'
+                    );
+                }
+                output.appendLine('');
+            }
+
+            output.appendLine(`Symbol source files (${summary.length}):`);
+            output.appendLine('');
+            let totalVars = 0;
+            let totalFuncs = 0;
+            for (const s of summary) {
+                totalVars += s.variables;
+                totalFuncs += s.functions;
+                output.appendLine(
+                    `  ${s.file}  —  ${s.variables} variables, ${s.functions} functions`
+                );
+            }
+            output.appendLine('');
+            output.appendLine(
+                `Total: ${totalVars} variables, ${totalFuncs} functions across ${summary.length} files.`
+            );
+            const timing = symbols.lastLoad;
+            if (timing) {
+                const secs = (timing.durationMs / 1000).toFixed(3);
+                const filterInfo = timing.filter
+                    ? `, filtered by "${timing.filter}" (GDB regexp: ${timing.gdbRegexp})`
+                    : '';
+                const timingLabel = timing.filter ? 'Filtered GDB query time' : 'Full load time';
+                output.appendLine(
+                    `${timingLabel}: ${timing.durationMs} ms (${secs} s) for ${timing.entries} symbols` +
+                        ` — source: ${timing.fromCache ? 'disk cache' : 'GDB query'}${filterInfo}.`
+                );
+            }
+            const viewTiming = symbols.lastViewBuild;
+            if (viewTiming) {
+                const filterLabel = symbols.filter ? `filter "${symbols.filter}"` : 'no filter';
+                output.appendLine(
+                    `Filter time: ${viewTiming.durationMs} ms for ${viewTiming.visible} visible symbols` +
+                        ` — ${filterLabel}.`
+                );
+            }
+            output.show(true);
         })
+    );
+
+    // ---- source-path filter configuration -----------------------------------
+    context.subscriptions.push(
+        vscode.commands.registerCommand('gdbSymbols.configureSourcePathFilter', async () => {
+            const cfg = vscode.workspace.getConfiguration('gdbSymbols');
+            const current = cfg.get<string[]>('sourcePathFilter', []);
+            const input = await vscode.window.showInputBox({
+                title: 'Filter Symbols by Source Path',
+                prompt:
+                    'Only show symbols whose source file matches one of these patterns ' +
+                    '(comma-separated; regex or substring). Leave empty to show all.',
+                placeHolder: 'e.g. Z:\\Code, \\GeneratedCode, MB_ZC_Rear_vECU',
+                value: current.join(', '),
+                ignoreFocusOut: true
+            });
+            if (input === undefined) {
+                return; // cancelled
+            }
+            const patterns = input
+                .split(',')
+                .map((p) => p.trim())
+                .filter((p) => p.length > 0);
+            const target = vscode.workspace.workspaceFolders?.length
+                ? vscode.ConfigurationTarget.Workspace
+                : vscode.ConfigurationTarget.Global;
+            await cfg.update('sourcePathFilter', patterns, target);
+            void vscode.window.showInformationMessage(
+                patterns.length
+                    ? `GDB Symbols: showing only symbols from ${patterns.length} source path pattern(s).`
+                    : 'GDB Symbols: source-path filter cleared — showing all symbols.'
+            );
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('gdbSymbols.configureSourcePathExclude', async () => {
+            const cfg = vscode.workspace.getConfiguration('gdbSymbols');
+            const current = cfg.get<string[]>('sourcePathExclude', []);
+            const input = await vscode.window.showInputBox({
+                title: 'Exclude Symbols by Source Path',
+                prompt:
+                    'Hide symbols whose source file matches one of these patterns ' +
+                    '(comma-separated; regex or substring). Leave empty to exclude nothing.',
+                placeHolder: 'e.g. mingw, gcc, msys, buildroot',
+                value: current.join(', '),
+                ignoreFocusOut: true
+            });
+            if (input === undefined) {
+                return; // cancelled
+            }
+            const patterns = input
+                .split(',')
+                .map((p) => p.trim())
+                .filter((p) => p.length > 0);
+            const target = vscode.workspace.workspaceFolders?.length
+                ? vscode.ConfigurationTarget.Workspace
+                : vscode.ConfigurationTarget.Global;
+            await cfg.update('sourcePathExclude', patterns, target);
+            void vscode.window.showInformationMessage(
+                patterns.length
+                    ? `GDB Symbols: excluding symbols from ${patterns.length} source path pattern(s).`
+                    : 'GDB Symbols: source-path exclusions cleared.'
+            );
+        })
+    );
+
+    // ---- one-click GDB attach ------------------------------------------------
+    context.subscriptions.push(
+        vscode.commands.registerCommand('gdbLiveWatch.attachToProcess', async () => {
+            attaching = true;
+            updateStatusBar();
+            try {
+                await attachToConfiguredProcess();
+            } finally {
+                attaching = false;
+                updateStatusBar();
+            }
+        }),
+        vscode.commands.registerCommand('gdbLiveWatch.configure', () => configureAutoAttach())
     );
 
     // ---- DAQ chart commands --------------------------------------------------
@@ -810,7 +1125,7 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     context.subscriptions.push(
-        treeView, symbolsView, statusBar, model, tracker, poller, symbols, daq, daqPanel
+        treeView, symbolsView, statusBar, exeStatusBar, attachStatusBar, model, tracker, poller, symbols, daq, daqPanel
     );
 }
 

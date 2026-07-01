@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { isGroup, LiveWatchModel, WatchGroup, WatchNode, WatchTreeNode } from './model';
+import { AddRow, isAddRow, isGroup, LiveWatchModel, WatchGroup, WatchNode, WatchTreeNode } from './model';
 
 export class LiveWatchTreeProvider implements vscode.TreeDataProvider<WatchTreeNode> {
     private readonly changeEmitter = new vscode.EventEmitter<WatchTreeNode | undefined>();
@@ -10,7 +10,24 @@ export class LiveWatchTreeProvider implements vscode.TreeDataProvider<WatchTreeN
     }
 
     getTreeItem(node: WatchTreeNode): vscode.TreeItem {
+        if (isAddRow(node)) {
+            return this.addRowItem(node);
+        }
         return isGroup(node) ? this.groupItem(node) : this.nodeItem(node);
+    }
+
+    private addRowItem(node: AddRow): vscode.TreeItem {
+        const item = new vscode.TreeItem('Add expression\u2026', vscode.TreeItemCollapsibleState.None);
+        item.id = `${node.group.id}::add`;
+        item.iconPath = new vscode.ThemeIcon('add');
+        item.contextValue = 'gdbLiveWatch.addRow';
+        item.tooltip = `Add a new expression to ${node.group.name}`;
+        item.command = {
+            command: 'gdbLiveWatch.addExpressionToGroup',
+            title: 'Add Expression',
+            arguments: [node.group]
+        };
+        return item;
     }
 
     private groupItem(group: WatchGroup): vscode.TreeItem {
@@ -63,6 +80,15 @@ export class LiveWatchTreeProvider implements vscode.TreeDataProvider<WatchTreeN
         } else {
             item.iconPath = new vscode.ThemeIcon('symbol-variable');
         }
+
+        // A single click only selects the item; the handler below detects a
+        // second click on the same node (double click) and opens the value
+        // editor. TreeView has no native double-click event, so we emulate it.
+        item.command = {
+            command: 'gdbLiveWatch.nodeClicked',
+            title: 'Edit value',
+            arguments: [node]
+        };
         return item;
     }
 
@@ -71,7 +97,12 @@ export class LiveWatchTreeProvider implements vscode.TreeDataProvider<WatchTreeN
             return [...this.model.groupList];
         }
         if (isGroup(node)) {
-            return [...node.roots];
+            // Trailing synthetic row gives a click target to add an expression
+            // at the bottom of the group, where the eye is after scanning it.
+            return [...node.roots, { kind: 'add', group: node } satisfies AddRow];
+        }
+        if (isAddRow(node)) {
+            return [];
         }
         if (node.children) {
             return node.children;
@@ -87,6 +118,9 @@ export class LiveWatchTreeProvider implements vscode.TreeDataProvider<WatchTreeN
     getParent(node: WatchTreeNode): WatchTreeNode | undefined {
         if (isGroup(node)) {
             return undefined;
+        }
+        if (isAddRow(node)) {
+            return node.group;
         }
         return node.parent ?? node.group;
     }
@@ -115,7 +149,7 @@ export class LiveWatchDragAndDropController
         // Only root expressions and groups can be moved; carry stable ids so
         // the drop handler can resolve the live model objects.
         const ids = source
-            .filter((n) => isGroup(n) || n.isRoot)
+            .filter((n): n is WatchGroup | WatchNode => isGroup(n) || (!isAddRow(n) && n.isRoot))
             .map((n) => n.id);
         if (ids.length === 0) {
             return;
@@ -170,6 +204,8 @@ export class LiveWatchDragAndDropController
             targetGroup = list[list.length - 1];
         } else if (isGroup(target)) {
             targetGroup = target;
+        } else if (isAddRow(target)) {
+            targetGroup = target.group;
         } else {
             const root = rootAncestor(target);
             targetGroup = root?.group;

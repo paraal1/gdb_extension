@@ -122,6 +122,16 @@
         }
     });
 
+    // Quick shortcut: double-clicking the empty area of the variables list
+    // (or the empty-state hint) starts adding a new variable by focusing the
+    // expression field, mirroring winIDEA's double-click-to-add gesture.
+    varListEl.addEventListener('dblclick', (e) => {
+        if (!e.target.closest('.varRow')) {
+            addInput.focus();
+            addInput.select();
+        }
+    });
+
     // ---- messages from the extension ------------------------------------------------
 
     window.addEventListener('message', (event) => {
@@ -229,6 +239,13 @@
 
     function renderVars() {
         varListEl.textContent = '';
+        if (variables.length === 0) {
+            const hint = document.createElement('div');
+            hint.className = 'varEmptyHint';
+            hint.textContent = 'Double-click here to add a variable';
+            varListEl.appendChild(hint);
+            return;
+        }
         for (const v of variables) {
             const row = document.createElement('div');
             row.className = 'varRow';
